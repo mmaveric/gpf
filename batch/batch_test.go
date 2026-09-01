@@ -233,8 +233,6 @@ func TestPoolReleaseClearing(t *testing.T) {
 }
 
 func TestPoolLifecycleAllocs(t *testing.T) {
-	t.Parallel()
-
 	pool, err := batch.NewPool[int](batch.PoolConfig{
 		Capacity:      1,
 		BatchCapacity: 64,
@@ -257,8 +255,6 @@ func TestPoolLifecycleAllocs(t *testing.T) {
 }
 
 func TestPoolExhaustionAllocs(t *testing.T) {
-	t.Parallel()
-
 	pool, err := batch.NewPool[int](batch.PoolConfig{
 		Capacity:      1,
 		BatchCapacity: 1,
