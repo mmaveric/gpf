@@ -19,3 +19,17 @@ func TestQueueOpsDeclaration(t *testing.T) {
 		t.Fatal("QueueOps callbacks were not preserved")
 	}
 }
+
+func TestFactoryDeclaration(t *testing.T) {
+	t.Parallel()
+
+	var factory queue.Factory[int] = func(config queue.Config) (queue.QueueOps[int], error) {
+		if config.Capacity != 1 || config.Policy != queue.Drop {
+			t.Fatalf("factory config = %#v", config)
+		}
+		return queue.QueueOps[int]{}, nil
+	}
+	if _, err := factory(queue.Config{Capacity: 1, BatchCapacity: 1, Policy: queue.Drop}); err != nil {
+		t.Fatalf("Factory() error = %v", err)
+	}
+}

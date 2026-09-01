@@ -1,6 +1,30 @@
 package node
 
-import "github.com/asharipov/gpf/batch"
+import (
+	"unsafe"
+
+	"github.com/asharipov/gpf/batch"
+)
+
+// OutputSet is the sealed set of supported ordinary output shapes.
+// Implementations are generated as Outputs0 through Outputs8.
+type OutputSet interface {
+	outputSet(unsafe.Pointer, OutputBinder)
+	OutputCount() uint8
+}
+
+// OutputBinder receives an ordinary output's one-based port and address during
+// runtime setup. It is a control-plane hook; batches remain concrete typed values.
+type OutputBinder func(uint8, unsafe.Pointer)
+
+// BindOutputs exposes generated ordinary output addresses to the graph runtime.
+func BindOutputs[O OutputSet](outputs *O, bind OutputBinder) {
+	if outputs == nil || bind == nil {
+		return
+	}
+	var shape O
+	shape.outputSet(unsafe.Pointer(outputs), bind)
+}
 
 // Result is the typed outcome of a node handler.
 type Result[E any] struct {
@@ -8,131 +32,107 @@ type Result[E any] struct {
 	Failed bool
 }
 
-// ErrorPort is a typed error-output declaration. It is separate from ordinary
-// outputs and therefore does not count toward the eight-output limit.
-type ErrorPort[E any] struct {
-	_ [0]func(E)
+// Output is one runtime-installed typed ordinary output. Its zero value cannot
+// acquire or commit a batch. One output can acquire and commit at most one
+// batch during a handler invocation.
+type Output[T any] struct {
+	acquire   func() (batch.Batch[T], bool)
+	acquired  batch.Batch[T]
+	staged    batch.Batch[T]
+	committed bool
 }
 
-// Outputs0 declares a node with no ordinary outputs.
-type Outputs0 struct{}
-
-// Outputs1 declares a node with one ordinary typed output.
-type Outputs1[O1 any] struct{ _ [0]func(O1) }
-
-// Outputs2 declares a node with two ordinary typed outputs.
-type Outputs2[O1, O2 any] struct{ _ [0]func(O1, O2) }
-
-// Outputs3 declares a node with three ordinary typed outputs.
-type Outputs3[O1, O2, O3 any] struct{ _ [0]func(O1, O2, O3) }
-
-// Outputs4 declares a node with four ordinary typed outputs.
-type Outputs4[O1, O2, O3, O4 any] struct{ _ [0]func(O1, O2, O3, O4) }
-
-// Outputs5 declares a node with five ordinary typed outputs.
-type Outputs5[O1, O2, O3, O4, O5 any] struct{ _ [0]func(O1, O2, O3, O4, O5) }
-
-// Outputs6 declares a node with six ordinary typed outputs.
-type Outputs6[O1, O2, O3, O4, O5, O6 any] struct {
-	_ [0]func(O1, O2, O3, O4, O5, O6)
+// Acquire obtains one batch from this output's edge-owned pool.
+func (o *Output[T]) Acquire() (batch.Batch[T], bool) {
+	if o == nil || o.acquire == nil || o.acquired.Cap() != 0 || o.committed {
+		return batch.Batch[T]{}, false
+	}
+	b, ok := o.acquire()
+	if !ok {
+		return batch.Batch[T]{}, false
+	}
+	o.acquired = b
+	return b, true
 }
 
-// Outputs7 declares a node with seven ordinary typed outputs.
-type Outputs7[O1, O2, O3, O4, O5, O6, O7 any] struct {
-	_ [0]func(O1, O2, O3, O4, O5, O6, O7)
+// Commit moves one compatible batch to this output for post-handler
+// publication. Invalid or duplicate commits leave the argument owned by the
+// caller.
+func (o *Output[T]) Commit(b *batch.Batch[T]) bool {
+	if o == nil || o.acquire == nil || o.committed || b == nil || b.Cap() == 0 {
+		return false
+	}
+	o.staged = b.Move()
+	o.committed = true
+	return true
 }
 
-// Outputs8 declares a node with eight ordinary typed outputs.
-type Outputs8[O1, O2, O3, O4, O5, O6, O7, O8 any] struct {
-	_ [0]func(O1, O2, O3, O4, O5, O6, O7, O8)
+// InstallOutput installs the private runtime acquisition hook. It is exported
+// solely so graph can bind the monomorphized runtime without a package cycle.
+func InstallOutput[T any](o *Output[T], acquire func() (batch.Batch[T], bool)) {
+	if o == nil {
+		return
+	}
+	*o = Output[T]{acquire: acquire}
 }
 
-// Handler0 processes a source-like node invocation.
-type Handler0[S, O, E any] func(state *S, outputs *O) Result[E]
-
-// Handler1 processes one input batch. The handler owns input for the duration
-// of the call; a future runtime releases it unless the handler moves it to a
-// compatible output.
-type Handler1[S, I, O, E any] func(state *S, input batch.Batch[I], outputs *O) Result[E]
-
-// Node0 declares a source-like node with no inputs.
-type Node0[S, O, E any] struct {
-	Handle Handler0[S, O, E]
-	Errors ErrorPort[E]
+// FinalizeOutput releases abandoned or failed batches, or calls publish for a
+// successful committed batch. A false result retains a pending batch for retry.
+func FinalizeOutput[T any](o *Output[T], failed bool, publish func(batch.Batch[T]) bool) bool {
+	if o == nil || o.acquire == nil {
+		return true
+	}
+	if !o.committed {
+		o.acquired.Release()
+		*o = Output[T]{acquire: o.acquire}
+		return true
+	}
+	if failed {
+		o.staged.Release()
+		*o = Output[T]{acquire: o.acquire}
+		return true
+	}
+	if !publish(o.staged) {
+		return false
+	}
+	*o = Output[T]{acquire: o.acquire}
+	return true
 }
 
-// Node1 declares a node with one input.
-type Node1[S, I1, O, E any] struct {
-	Handle1 Handler1[S, I1, O, E]
-	Errors  ErrorPort[E]
-}
+// SourceHandler processes a source-like invocation with explicit state.
+type SourceHandler[S any, O OutputSet, E any] func(state *S, outputs *O) Result[E]
 
-// Node2 declares a node with two inputs and separate handlers for each input.
-type Node2[S, I1, I2, O, E any] struct {
-	Handle1 Handler1[S, I1, O, E]
-	Handle2 Handler1[S, I2, O, E]
-	Errors  ErrorPort[E]
-}
+// InputHandler processes one owned input batch with explicit state. A future
+// runtime releases input unless the handler moves it to a compatible output.
+type InputHandler[S, I any, O OutputSet, E any] func(
+	state *S,
+	input batch.Batch[I],
+	outputs *O,
+) Result[E]
 
-// Node3 declares a node with three inputs and separate handlers for each input.
-type Node3[S, I1, I2, I3, O, E any] struct {
-	Handle1 Handler1[S, I1, O, E]
-	Handle2 Handler1[S, I2, O, E]
-	Handle3 Handler1[S, I3, O, E]
-	Errors  ErrorPort[E]
-}
+// ReadyMask identifies ready input positions. Bit 1<<PortN represents PortN.
+type ReadyMask uint8
 
-// Node4 declares a node with four inputs and separate handlers for each input.
-type Node4[S, I1, I2, I3, I4, O, E any] struct {
-	Handle1 Handler1[S, I1, O, E]
-	Handle2 Handler1[S, I2, O, E]
-	Handle3 Handler1[S, I3, O, E]
-	Handle4 Handler1[S, I4, O, E]
-	Errors  ErrorPort[E]
-}
+// PortIndex is a zero-based input position in a ReadyMask.
+type PortIndex uint8
 
-// Node5 declares a node with five inputs and separate handlers for each input.
-type Node5[S, I1, I2, I3, I4, I5, O, E any] struct {
-	Handle1 Handler1[S, I1, O, E]
-	Handle2 Handler1[S, I2, O, E]
-	Handle3 Handler1[S, I3, O, E]
-	Handle4 Handler1[S, I4, O, E]
-	Handle5 Handler1[S, I5, O, E]
-	Errors  ErrorPort[E]
-}
+const (
+	// Port1 is zero so its readiness maps directly to the least-significant bit.
+	Port1 PortIndex = iota
+	Port2
+	Port3
+	Port4
+	Port5
+	Port6
+	Port7
+	Port8
+)
 
-// Node6 declares a node with six inputs and separate handlers for each input.
-type Node6[S, I1, I2, I3, I4, I5, I6, O, E any] struct {
-	Handle1 Handler1[S, I1, O, E]
-	Handle2 Handler1[S, I2, O, E]
-	Handle3 Handler1[S, I3, O, E]
-	Handle4 Handler1[S, I4, O, E]
-	Handle5 Handler1[S, I5, O, E]
-	Handle6 Handler1[S, I6, O, E]
-	Errors  ErrorPort[E]
-}
+// Selector chooses one input when multiple positions are ready. It must return
+// an in-range position whose bit is set in ready. A future runtime invokes and
+// validates selectors.
+type Selector[S any] func(state *S, ready ReadyMask) PortIndex
 
-// Node7 declares a node with seven inputs and separate handlers for each input.
-type Node7[S, I1, I2, I3, I4, I5, I6, I7, O, E any] struct {
-	Handle1 Handler1[S, I1, O, E]
-	Handle2 Handler1[S, I2, O, E]
-	Handle3 Handler1[S, I3, O, E]
-	Handle4 Handler1[S, I4, O, E]
-	Handle5 Handler1[S, I5, O, E]
-	Handle6 Handler1[S, I6, O, E]
-	Handle7 Handler1[S, I7, O, E]
-	Errors  ErrorPort[E]
-}
-
-// Node8 declares a node with eight inputs and separate handlers for each input.
-type Node8[S, I1, I2, I3, I4, I5, I6, I7, I8, O, E any] struct {
-	Handle1 Handler1[S, I1, O, E]
-	Handle2 Handler1[S, I2, O, E]
-	Handle3 Handler1[S, I3, O, E]
-	Handle4 Handler1[S, I4, O, E]
-	Handle5 Handler1[S, I5, O, E]
-	Handle6 Handler1[S, I6, O, E]
-	Handle7 Handler1[S, I7, O, E]
-	Handle8 Handler1[S, I8, O, E]
-	Errors  ErrorPort[E]
-}
+// ClosureSelector chooses one input using state captured by its closure. It has
+// the same return obligations as Selector.
+type ClosureSelector func(ready ReadyMask) PortIndex
