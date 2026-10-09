@@ -39,25 +39,39 @@ The `ValidationReport` consumed by Build SHALL contain sorted validation issues,
 - **THEN** Build returns the corresponding `ValidationError`, retains no report topology in a definition, and leaves the builder open
 
 ### Requirement: Opaque structurally immutable topology
-`Definition` SHALL have only unexported fields and SHALL own dense copied node metadata, dense copied edge metadata, deeply copied forward and reverse adjacency, and a copied canonical topological order from `ValidationReport`. After publication, framework code SHALL NOT mutate those fields or any nested backing storage.
-
-This capability SHALL add exactly `func (d *Definition) NodeCount() int`, `func (d *Definition) EdgeCount() int`, and `func (d *Definition) TopologicalOrder() []NodeID` as public definition inspection methods, and SHALL NOT add a public adjacency accessor. Count methods SHALL return zero for a nil receiver or zero-value definition. `TopologicalOrder` SHALL return nil for a nil receiver or zero-value definition; for a valid definition it SHALL allocate a new slice of length `NodeCount`, copy the stored order, and return that clone, including a non-nil empty slice for a valid zero-node definition.
+`Definition` SHALL own copied dense node/edge metadata, canonical adjacency/order, selected queue plans, automatic constraints, and inactive NUMA annotations. It SHALL expose only NodeCount, EdgeCount, TopologicalOrder, EdgeQueuePlans, Constraints, GroupNUMA, and Start; no mutable runtime resource accessor is added. Every returned slice SHALL be an independent copy; nil and zero-value definitions return zero counts and nil snapshots. GroupNUMA rows SHALL be ordered by physical group identity and include logical group, replica index, and explicit-presence NUMA placement.
 
 #### Scenario: Mutate returned topology data
-- **WHEN** a caller changes a non-empty slice returned by `TopologicalOrder`
-- **THEN** later reads return the original definition topology and canonical order
+- **WHEN** a caller mutates TopologicalOrder, EdgeQueuePlans, Constraints, or GroupNUMA results
+- **THEN** subsequent inspection and execution retain the original definition metadata
+
+#### Scenario: Mutate returned topology and constraints
+- **WHEN** a caller changes any rows returned by TopologicalOrder, EdgeQueuePlans, or Constraints
+- **THEN** later reads and execution preserve the original immutable definition plan
+
+#### Scenario: Mutate returned edge queue plans
+- **WHEN** a caller changes a non-empty slice returned by `EdgeQueuePlans`
+- **THEN** later reads return the original model and physical cardinalities without altering Build or Start behavior
 
 #### Scenario: Inspect nil and zero definitions
-- **WHEN** a caller invokes the three inspection methods on a nil receiver or zero-value definition
-- **THEN** both counts are zero and `TopologicalOrder` is nil
+- **WHEN** inspection methods are invoked on nil or zero-value definitions
+- **THEN** they return zero counts and nil slice snapshots
+
+#### Scenario: Preserve validated canonical order
+- **WHEN** Build succeeds for a DAG with multiple valid topological orders
+- **THEN** the stored canonical order is the validator-provided order
+
+#### Scenario: Detach all metadata from builder storage
+- **WHEN** a definition is built and the original builder placement/NUMA inputs are changed
+- **THEN** returned group and edge annotations remain the copied values
 
 #### Scenario: Preserve the validated canonical order
 - **WHEN** Build succeeds for a DAG with more than one valid topological ordering
-- **THEN** the definition stores the validator's canonical topological order rather than deriving another order from storage iteration
+- **THEN** the definition stores the validator's canonical topological order
 
 #### Scenario: Detach from builder storage
 - **WHEN** a definition is built from topology held in mutable builder storage
-- **THEN** every slice-backed topology value in the definition is owned by the definition and cannot be changed through an alias to builder storage
+- **THEN** every slice-backed topology value is owned by the definition and cannot be changed through a builder alias
 
 ### Requirement: Persistent graph identity
 Every successfully built definition SHALL retain the exact non-zero private owner identity established for its builder by `NewBuilder`. The owner SHALL be immutable identity only and SHALL NOT reference mutable builder topology or lifecycle state. Build SHALL NOT substitute numeric node or edge identities or a newly allocated owner for that identity, and definition APIs SHALL NOT expose a way to read, construct, replace, mutate, or forge it. A nil receiver or zero-value definition SHALL have no valid owner and SHALL never be returned by successful Build.
@@ -67,18 +81,83 @@ Every successfully built definition SHALL retain the exact non-zero private owne
 - **THEN** the handle remains attributable to that definition while a handle from another builder does not
 
 ### Requirement: Runtime-neutral reusable definition
-Build SHALL preserve the dormant typed registration and edge-binding closures that retain each configured `Stateful.Factory`, `ClosureFactory`, optional explicit `Init` and `Close` lifecycle callback, and `queue.Factory`. Build SHALL NOT invoke any of those functions; lifecycle callbacks returned only by a `ClosureFactory` SHALL remain uncreated. A definition SHALL contain no factory-produced explicit state, `ClosureReplica`, live `QueueOps`, queue implementation, executor pointer, worker, locked OS thread, affinity adapter, affinity status, pool, or lifecycle status. It SHALL additionally retain only the private immutable effective manual placements, deterministic group plan, one validated CPU binding for each group, and local-or-remote edge classifications supplied by the manual-multigroup-runtime and cpu-affinity-runtime capabilities.
+Build SHALL copy optional pool/group/queue NUMA annotations and typed pool/queue allocator descriptors as inactive metadata. Build and sequential Start SHALL never invoke those allocator descriptors, discover host NUMA topology, select local memory, change affinity, or alter portable allocation. Annotations SHALL be visible only through copied immutable GroupNUMA/EdgeQueuePlans and pool metric metadata. The definition SHALL still contain no factory-produced state, live allocator-owned storage, queue, pool, worker, affinity adapter/outcome, or lifecycle state. Factories, error resources, queues, and metrics remain dormant at Build and fresh at each Start.
 
-A valid definition SHALL expose `Start() (*Executor, error)` for the configuration-free fixed-plan executor capability. Each sequential successful Start after the prior executor stops SHALL create fresh mutable state, closure replicas, batch pools, queue operations, exactly one locked worker per planned group, and fresh affinity outcomes from the stored immutable CPU bindings without mutating definition identity, topology, placement, CPU binding, or classification. Concurrent starts remain unsupported. The definition's existing inspection methods SHALL continue to expose no mutable executor resources, CPU-plan storage, queue operations, worker resources, affinity adapter, affinity status, state, lifecycle, or mutable plan storage.
+#### Scenario: Keep error factories and pools dormant during Build
+- **WHEN** a valid graph with typed error configuration is built
+- **THEN** no error factory, pool, queue, batch, or error value is created
 
 #### Scenario: Keep factories and CPU plan dormant during Build
-- **WHEN** registered nodes and edges contain observable state, closure, and eligible local queue factories plus explicit lifecycle callbacks, every effective group has a CPU binding, and Build succeeds
-- **THEN** every callback invocation count remains zero, closure lifecycle callbacks remain uncreated, and the definition stores no factory-produced state, live queue operations, worker, thread, adapter, or affinity outcome
+- **WHEN** a graph has observable factories and complete CPU/NUMA metadata
+- **THEN** Build invokes no callback and stores no runtime resources or affinity outcome
 
 #### Scenario: Reuse a CPU-bound multi-group definition sequentially
-- **WHEN** a fixed-plan executor has stopped and the same definition starts again
-- **THEN** each start obtains fresh factory-created resources, one locked worker and one new affinity result per the same immutable CPU-bound group plan, while definition identity, topology, placement, CPU bindings, and classification remain unchanged
+- **WHEN** a definition starts again after stop
+- **THEN** runtime resources are fresh while topology, CPU bindings, and NUMA annotations remain unchanged
+
+#### Scenario: Reuse a definition with error routing sequentially
+- **WHEN** a stopped error-routed definition restarts
+- **THEN** fresh error pools and queue operations are created without changing copied metadata
 
 #### Scenario: Inspect during executor lifetime
-- **WHEN** a definition has a running one- or multi-group executor and a caller reads its count or topological-order accessors
-- **THEN** the accessors expose only the same immutable structural snapshot and no executor, worker, thread, CPU binding, affinity, queue, state, lifecycle, or mutable plan data
+- **WHEN** group NUMA metadata is inspected during a running executor
+- **THEN** only copied annotations are exposed, never mutable allocator/worker/queue resources
+
+#### Scenario: Inspect during executor lifetime
+- **WHEN** a caller inspects a running definition
+- **THEN** accessors expose only copied logical topology and plan metadata
+
+#### Scenario: Keep factories dormant through finalization
+- **WHEN** a complete preview is assigned CPUs and finalized
+- **THEN** no state, closure, or queue factory has run and the definition contains only immutable physical plans and dormant bindings
+
+#### Scenario: Reuse a finalized automatic definition
+- **WHEN** its executor stops and the same automatic definition starts again
+- **THEN** fresh resources and affinity outcomes are created while logical topology and physical plan inspection remain unchanged
+
+#### Scenario: Keep error factories and pools dormant during Build
+- **WHEN** a graph contains a typed error factory before automatic finalization
+- **THEN** Build invokes no error factory and stores no live pool or queue
+
+#### Scenario: Keep factories and CPU plan dormant during Build
+- **WHEN** an automatic preview is built with dormant node factories
+- **THEN** no callback or runtime state is created before finalization and Start
+
+#### Scenario: Reuse a CPU-bound multi-group definition sequentially
+- **WHEN** a CPU-bound physical definition restarts
+- **THEN** it creates fresh resources and affinity results without changing topology or bindings
+
+#### Scenario: Reuse a definition with error routing sequentially
+- **WHEN** an automatic definition with typed error edges restarts
+- **THEN** error pools and queue operations are fresh
+
+#### Scenario: Keep factories and resource construction dormant during Build
+- **WHEN** a valid graph has observable factories, lifecycle callbacks, queues, and constraints
+- **THEN** Build leaves callback counts at zero and stores only immutable plans, not runtime resources
+
+#### Scenario: Reuse fixed and replicated definitions sequentially
+- **WHEN** an executor stops and its definition starts again
+- **THEN** state, queues, pools, workers, and affinity outcomes are fresh while topology and numeric previews remain unchanged
+
+#### Scenario: Reuse a node-pool definition sequentially
+- **WHEN** a stopped node-pool executor starts again from the same definition
+- **THEN** each physical worker receives fresh state/resources and logical topology/worker plan storage remains unchanged
+
+#### Scenario: Inspect constraints during executor lifetime
+- **WHEN** a caller reads Constraints during execution
+- **THEN** only an independent numeric snapshot is returned and no runtime resource is exposed
+
+#### Scenario: Inspect logical topology with physical expansion
+- **WHEN** a caller reads topology accessors on a replicated definition
+- **THEN** logical counts/order remain unchanged, returned storage is independent, and physical expansion remains inaccessible except through copied read-only execution-plan/affinity/metrics identities
+
+### Requirement: Dormant copied logger configuration
+Build SHALL retain copied optional logger configuration and its callback without invoking mappers or logging handlers, creating event rings, or starting a logger goroutine. Each successful sequential Start SHALL materialize fresh per-physical-worker rings and counters, and SHALL start one unpinned logger only after every data-node Init succeeds. Startup rollback before activation SHALL leave no logger goroutine running. These dormant callback/configuration fields extend the runtime-neutral definition contract without exposing mutable runtime resources.
+
+#### Scenario: Fail initialization before logger activation
+- **WHEN** a configured definition's node Init fails during Start
+- **THEN** its owned lifecycle rolls back and no logger callback or running logger is created
+
+#### Scenario: Restart a configured definition
+- **WHEN** one executor stops and the same configured definition starts again
+- **THEN** logging uses fresh empty event transport and counters without changing the stored configuration

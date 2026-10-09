@@ -44,3 +44,34 @@ The benchmark harness SHALL allow throughput and latency measurements to be reco
 #### Scenario: Interpret a passing allocation gate
 - **WHEN** a data-plane path passes its zero-allocation assertion
 - **THEN** the benchmark documentation states that further throughput and latency review can still be required
+
+### Requirement: Measure typed error-routing data paths
+After typed-error-routing is implemented, the benchmark harness SHALL execute built-in local and remote typed error-routing cases rather than mark them unavailable. Case names SHALL encode the batch size and applicable group count, call `b.ReportAllocs`, and exclude definition building and Start setup from measured iterations. The repository SHALL add `testing.AllocsPerRun` assertions for local failed-result-to-error-sink delivery, remote error SPSC transfer, error Drop, and error Wait retry and SHALL require zero framework allocations per operation.
+
+#### Scenario: Run the error-routing benchmark matrix entries
+- **WHEN** a developer runs the benchmark matrix after this capability is implemented
+- **THEN** local and remote typed error-routing cases execute after setup, report allocations, and retain batch and group dimensions in their names
+
+#### Scenario: Detect an error-routing allocation regression
+- **WHEN** a built-in failed-result publication, error queue transfer, Drop release, or Wait retry allocates during a measured operation
+- **THEN** its allocation assertion fails while handlers, selectors, factories, startup, shutdown, and custom queue allocation remain outside that assertion
+
+### Requirement: Measure instrumented runtime paths
+Allocation gates SHALL run with runtime metrics enabled on built-in local and remote ordinary and error delivery, queue Drop, Wait retry, and source-pool exhaustion after setup, and SHALL require zero framework allocations per operation. Snapshot construction SHALL remain outside steady-state allocation measurement. The benchmark harness SHALL retain ReportAllocs and batch/group dimensions and SHALL record comparable before-and-after throughput and allocation results for the instrumentation change without a throughput pass/fail threshold. Allocation assertions SHALL remain serial under the existing allocation measurement contract.
+
+#### Scenario: Detect instrumentation allocations
+- **WHEN** a metric update allocates on an instrumented built-in measured operation
+- **THEN** its zero-allocation assertion fails even if the transport itself is allocation-free
+
+#### Scenario: Compare instrumentation overhead
+- **WHEN** benchmark results for matching pre-change and instrumented cases are compared
+- **THEN** batch and group configuration, allocations, and throughput are reported with setup and snapshots excluded from timed iterations
+
+### Requirement: Execute node-call and local-edge matrix entries
+The reserved node-call/batch=64 and local-edge/batch=64/group=1 entries SHALL execute concrete typed handlers and built-in local transport instead of skipping. Each measured operation SHALL process a logical 64-element batch, exclude setup and teardown, retain ReportAllocs, and expose a serial zero-framework-allocation assertion.
+#### Scenario: Run the completed matrix
+- **WHEN** the benchmark matrix runs after setup
+- **THEN** both reserved cases execute, report allocations, and verify the advertised batch size without timing snapshots or lifecycle work
+#### Scenario: Detect a local allocation regression
+- **WHEN** an executable node-call or local-edge fixture allocates during its measured framework operation
+- **THEN** its serial allocation assertion fails against a zero threshold

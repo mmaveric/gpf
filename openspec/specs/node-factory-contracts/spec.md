@@ -37,7 +37,15 @@ The `node` package SHALL expose `ClosureReplica[H]` as a struct with `Handlers H
 - **THEN** the replica remains valid and startup and shutdown require no lifecycle callback invocation
 
 ### Requirement: Fresh factory result per replica and start
-A future runtime SHALL call the applicable explicit state factory or closure factory exactly once for each logical node replica on each start. Every successful call SHALL supply fresh logical mutable state that is not shared with any other replica or start; the factory author SHALL create fresh mutable maps, slices, pointers, or closure environments contained by the result.
+Each successful explicit or closure factory invocation SHALL create state owned by exactly one physical node instance, including each fixed node-worker-pool worker and each whole-group replica. Build SHALL remain dormant. Start SHALL invoke a factory once per physical instance, and successful lifecycle ownership SHALL be initialized/closed exactly once on that instance's locked worker, including rollback. Framework-created mutable state and closure environments SHALL not be shared between workers; deliberately shared user captures remain caller-owned and require user synchronization.
+
+#### Scenario: Mutate separate node worker states
+- **WHEN** one logical node starts with three workers whose factories create mutable maps
+- **THEN** each worker's handler mutates only the map produced for its own physical instance
+
+#### Scenario: Observe independent mutable state
+- **WHEN** a logical node is expanded to multiple group replicas and each factory creates a mutable map
+- **THEN** each physical handler observes and mutates only its own map unless application code deliberately shares a captured map
 
 #### Scenario: Start multiple replicas
 - **WHEN** one node is started with multiple logical replicas

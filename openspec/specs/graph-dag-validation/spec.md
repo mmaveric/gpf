@@ -27,17 +27,21 @@ Every non-empty initialized builder SHALL return a non-nil report. It SHALL retu
 ### Requirement: Reusable deterministic validation report
 `ValidationReport` SHALL have unexported backing storage and SHALL expose defensive-copy `Issues() []ValidationIssue`, `TopologicalOrder() []NodeID`, `ForwardAdjacency() []ValidationAdjacency`, and `ReverseAdjacency() []ValidationAdjacency` methods. `ValidationAdjacency` SHALL contain `NodeID` and `Edges []ValidationAdjacentEdge`; `ValidationAdjacentEdge` SHALL contain `EdgeID` and `AdjacentNodeID`.
 
-Each adjacency snapshot SHALL contain one row per registered node, including an empty row for a node with no edges, in ascending `NodeID` order. Forward rows SHALL list destination nodes and reverse rows SHALL list source nodes, with each row sorted by `AdjacentNodeID` then `EdgeID`. Snapshots SHALL contain only ordinary edges and SHALL own their row and edge storage independently of builder metadata.
+Each adjacency snapshot SHALL contain one row per registered node, including an empty row for a node with no edges, in ascending `NodeID` order. Forward rows SHALL list destination nodes and reverse rows SHALL list source nodes, with each row sorted by `AdjacentNodeID` then `EdgeID`. Snapshots SHALL contain ordinary and connected error edges and SHALL own their row and edge storage independently of builder metadata.
 
 For every acyclic non-empty topology, `TopologicalOrder` SHALL contain every node exactly once in canonical Kahn order even when other validation issues exist. For cyclic topology it SHALL be empty rather than exposing a partial Kahn prefix. The report SHALL contain sorted issues, and its accessors SHALL deep-copy issues, cycle witnesses, topological order, adjacency rows, and adjacency edges. It SHALL be a point-in-time analysis unaffected by later mutation of an open builder and SHALL provide the complete graph analysis that a later immutable `Build` can copy without rerunning validation algorithms.
+
+#### Scenario: Snapshot a connected error edge
+- **WHEN** an error port is connected to a matching ordinary input
+- **THEN** forward and reverse adjacency contain that edge in canonical order and the report remains independent of later builder mutation
 
 #### Scenario: Snapshot an acyclic invalid graph
 - **WHEN** an initialized non-empty graph is acyclic but has static, connectivity, edge-configuration, or reachability issues
 - **THEN** its report contains those sorted issues, complete adjacency snapshots, and a full canonical topological order
 
 #### Scenario: Suppress a partial cyclic order
-- **WHEN** Kahn processing leaves residual cyclic nodes
-- **THEN** the report retains complete adjacency snapshots but returns an empty topological order
+- **WHEN** ordinary and error edges together leave residual cyclic nodes in Kahn processing
+- **THEN** the report retains complete adjacency snapshots and returns an empty topological order
 
 #### Scenario: Keep a report independent of builder mutation
 - **WHEN** a caller validates an open builder and then mutates that builder
@@ -92,21 +96,33 @@ Validation SHALL report one missing-factory, missing-handler, or missing-selecto
 - **THEN** it reports static contract issues solely from registration-produced masks without reflection, type assertions, or `any` callback storage
 
 ### Requirement: Ordinary connectivity and edge configuration validation
-Validation SHALL require exactly one connection for every declared ordinary input and every declared ordinary output under the existing single-consumer connection model. A node SHALL be allowed to declare zero ordinary inputs or zero ordinary outputs. Typed error outputs SHALL remain non-connectable under the prior connection contract and SHALL be excluded from connectivity counts, adjacency snapshots, degree calculations, topological ordering, cycle detection, and source-to-sink reachability.
+Validation SHALL require exactly one connection for every declared ordinary input and every declared ordinary output under the existing single-consumer connection model. An ordinary input connected from either an ordinary or error output SHALL satisfy its one-producer requirement. A node SHALL be allowed to declare zero ordinary inputs or zero ordinary outputs. Error outputs SHALL be optional and SHALL not produce an unconnected-output issue.
 
-`Connect` and validation SHALL call the same unexported non-generic pure edge-configuration validator for capacity and queue-full policy; validation SHALL NOT duplicate those predicates. Validation SHALL map every violation to the associated edge identity and validation code. The shared helper SHALL NOT mutate topology or invoke an optional typed queue factory.
+`Connect`, `ConnectError`, and validation SHALL call the same unexported non-generic pure edge-configuration validator for capacity, batch capacity, and queue-full policy; validation SHALL NOT duplicate those predicates. Validation SHALL map every violation to the associated edge identity and validation code. The shared helper SHALL NOT mutate topology or invoke an optional typed queue factory.
+
+#### Scenario: Accept an input fed by an error edge
+- **WHEN** a declared ordinary input has exactly one matching error-edge producer
+- **THEN** validation reports no unconnected-input issue for that input
 
 #### Scenario: Report disconnected ordinary ports
 - **WHEN** one or more declared ordinary inputs or ordinary outputs have no connection
 - **THEN** `Validate` reports a separate issue identifying each disconnected node and node-local port
 
 #### Scenario: Exclude typed error outputs
-- **WHEN** validation analyzes a node's typed error output, which cannot be passed to the prior ordinary `Connect` API
+- **WHEN** validation analyzes an unconnected typed error output
 - **THEN** the error output contributes no connectivity issue, edge, degree, adjacency entry, cycle, or reachability path
 
+#### Scenario: Permit an unconnected error output
+- **WHEN** one or more registered error outputs have no consumer
+- **THEN** validation reports no connectivity issue for those error ports
+
 #### Scenario: Recheck invalid stored edge configuration
-- **WHEN** builder metadata contains an edge with non-positive capacity or an unsupported queue-full policy
-- **THEN** the shared pure validator produces the same rejection used by `Connect`, and validation reports the applicable code and edge identity without invoking its queue factory
+- **WHEN** builder metadata contains an ordinary edge with invalid capacity, batch capacity, or policy
+- **THEN** the shared pure validator reports the applicable code and edge identity without invoking its queue factory
+
+#### Scenario: Recheck invalid stored error-edge configuration
+- **WHEN** builder metadata contains an error edge with invalid capacity, batch capacity, or policy
+- **THEN** the shared pure validator reports the applicable code and edge identity without invoking its queue factory
 
 ### Requirement: Deterministic DAG ordering and cycle witness
 Validation SHALL use the report's forward adjacency snapshot to run Kahn's algorithm with the smallest available `NodeID` selected at each step and outgoing edges traversed by ascending destination `NodeID` then `EdgeID`. For an acyclic graph, the report SHALL contain all nodes exactly once in canonical order, and every edge SHALL lead from an earlier node to a later node.
@@ -126,9 +142,13 @@ If Kahn's algorithm leaves residual nodes, validation SHALL report a cycle issue
 - **THEN** the cycle issue carries that node twice as the complete witness
 
 ### Requirement: Bidirectional source-to-sink reachability
-A structural source SHALL be a node with zero declared ordinary inputs, and a structural sink SHALL be a node with zero declared ordinary outputs. Validation SHALL traverse the report's forward snapshot from every structural source and its reverse snapshot from every structural sink. It SHALL report an unreachable-from-source issue for each node not found by the forward traversal and an unable-to-reach-sink issue for each node not found by the reverse traversal, including when cycle issues also exist.
+A structural source SHALL be a node with zero declared ordinary inputs, and a structural sink SHALL be a node with zero declared ordinary outputs. Validation SHALL traverse the report's forward snapshot from every structural source and its reverse snapshot from every structural sink. Because the snapshot includes connected error edges, an error consumer reachable only through a potential failed result SHALL participate in reachability. It SHALL report an unreachable-from-source issue for each node not found by the forward traversal and an unable-to-reach-sink issue for each node not found by the reverse traversal, including when cycle issues also exist.
 
-Source and sink classification SHALL use declared ordinary arity rather than current edge degree. Typed error outputs are non-connectable and SHALL be absent from both traversals. A node with zero ordinary inputs and zero ordinary outputs SHALL be both a source and a sink and SHALL be valid in isolation when its static contracts are complete.
+Source and sink classification SHALL use declared ordinary arity rather than current edge degree. Unconnected error outputs SHALL be absent from both traversals.
+
+#### Scenario: Reach an error-only consumer
+- **WHEN** a producer's error port connects to a consumer whose only input is that error edge
+- **THEN** validation treats the consumer as reachable from the producer and includes it in source-to-sink analysis
 
 #### Scenario: Reject a component without a structural source
 - **WHEN** a component's nodes are not reachable from any zero-input node
