@@ -11,11 +11,11 @@ import (
 )
 
 func BenchmarkDataPlane(b *testing.B) {
-	b.Run("node-call/batch=64", unavailableBenchmark)
+	b.Run("node-call/batch=64", benchmarkNodeCall)
 	b.Run("pool-acquire-release/batch=64", func(b *testing.B) {
 		benchmarkPoolLifecycle(b, false)
 	})
-	b.Run("local-edge/batch=64/group=1", unavailableBenchmark)
+	b.Run("local-edge/batch=64/group=1", benchmarkLocalEdge)
 	b.Run("remote-queue/batch=64/groups=2", benchmarkRemoteDelivery)
 	b.Run("local-error/batch=64/groups=1", func(b *testing.B) { benchmarkErrorDelivery(b, false) })
 	b.Run("remote-error/batch=64/groups=2", func(b *testing.B) { benchmarkErrorDelivery(b, true) })
@@ -254,11 +254,6 @@ func benchmarkErrorDelivery(b *testing.B, remote bool) {
 		for shared.delivered.Load() < target {
 		}
 	}
-}
-
-func unavailableBenchmark(b *testing.B) {
-	b.ReportAllocs()
-	b.Skip("data-plane path is not implemented")
 }
 
 func benchmarkPoolLifecycle(b *testing.B, clearOnRelease bool) {
