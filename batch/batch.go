@@ -2,6 +2,7 @@ package batch
 
 import (
 	"errors"
+	"github.com/asharipov/gpf/numa"
 	"sync/atomic"
 )
 
@@ -12,7 +13,8 @@ var (
 	ErrPoolCapacityOverflow = errors.New("pool storage capacity overflows int")
 )
 
-// PoolConfig defines fixed storage limits for a typed pool.
+// PoolConfig defines fixed storage limits for a typed pool. NUMA is optional
+// inactive metadata; Allocator belongs in PoolOptions and is currently dormant.
 //
 // When ClearOnRelease is false, pointer-containing elements can remain retained
 // by reusable storage until a later write overwrites them.
@@ -20,6 +22,19 @@ type PoolConfig struct {
 	Capacity       uint32
 	BatchCapacity  uint32
 	ClearOnRelease bool
+	NUMA           numa.Placement
+	OwnerID        uint32
+}
+
+// Allocator is a typed dormant backing-storage descriptor. Pool construction
+// currently ignores it and continues using portable storage allocation.
+type Allocator[T any] func(elements int) ([]T, error)
+
+// PoolOptions combines portable pool limits with a typed inactive allocator
+// descriptor. NewPoolWithOptions currently allocates using the portable path.
+type PoolOptions[T any] struct {
+	Config    PoolConfig
+	Allocator Allocator[T]
 }
 
 type slot[T any] struct {
@@ -31,9 +46,13 @@ type slot[T any] struct {
 }
 
 // Batch is an owned handle for one preallocated pool slot. Its zero value is an
-// empty handle. A batch is valid only until it is moved or released.
+// empty handle. A batch is valid only until it is moved or released. A handler
+// receives input batches by value; moving or releasing that copy also informs
+// the executor's invocation scope so its retained cleanup copy will not release
+// the transferred slot. Independently moved batches do not retain that scope.
 type Batch[T any] struct {
-	slot *slot[T]
+	slot  *slot[T]
+	scope *InputScope[T]
 }
 
 // Len returns the number of populated elements in the batch.
@@ -87,13 +106,19 @@ func (b *Batch[T]) SetLen(n int) bool {
 	return true
 }
 
-// Move transfers batch ownership and clears the source handle.
+// Move transfers batch ownership and clears the source handle. When called on
+// a scoped handler input, it relinquishes the executor's automatic cleanup for
+// this invocation and detaches the returned handle from that scope.
 func (b *Batch[T]) Move() Batch[T] {
 	if b == nil {
 		return Batch[T]{}
 	}
 
 	moved := *b
+	if b.scope != nil {
+		b.scope.consumed = true
+		moved.scope = nil
+	}
 	*b = Batch[T]{}
 	return moved
 }
@@ -112,13 +137,20 @@ func (b *Batch[T]) Release() {
 // Pools preallocate all storage. Their atomic slot ownership also supports the
 // remote SPSC path, where the producer acquires and the consumer releases.
 type Pool[T any] struct {
-	slots          []slot[T]
-	clearOnRelease bool
-	next           atomic.Uint32
+	inUse, highWater    atomic.Uint32
+	slots               []slot[T]
+	clearOnRelease      bool
+	allocatorDescriptor Allocator[T]
+	numa                numa.Placement
+	ownerID             uint32
+	next                atomic.Uint32
 }
 
 // NewPool allocates all slot metadata and typed backing storage for a pool.
 func NewPool[T any](config PoolConfig) (*Pool[T], error) {
+	if err := config.NUMA.Validate(); err != nil {
+		return nil, err
+	}
 	slotCount, batchCapacity, totalCapacity, err := poolSizes(config)
 	if err != nil {
 		return nil, err
@@ -137,10 +169,31 @@ func NewPool[T any](config PoolConfig) (*Pool[T], error) {
 	pool := &Pool[T]{
 		slots:          slots,
 		clearOnRelease: config.ClearOnRelease,
+		numa:           config.NUMA,
+		ownerID:        config.OwnerID,
 	}
 	for index := range pool.slots {
 		pool.slots[index].pool = pool
 	}
+	return pool, nil
+}
+
+// OwnerID returns the pool's optional numeric transport owner identity.
+func (b Batch[T]) OwnerID() uint32 {
+	if b.slot == nil || b.slot.pool == nil {
+		return 0
+	}
+	return b.slot.pool.ownerID
+}
+
+// NewPoolWithOptions retains a typed dormant allocator descriptor while using
+// the same portable allocation behavior as NewPool.
+func NewPoolWithOptions[T any](options PoolOptions[T]) (*Pool[T], error) {
+	pool, err := NewPool[T](options.Config)
+	if err != nil {
+		return nil, err
+	}
+	pool.allocatorDescriptor = options.Allocator
 	return pool, nil
 }
 
@@ -155,6 +208,7 @@ func (p *Pool[T]) Acquire() (Batch[T], bool) {
 		index := (start + uint32(offset)) % uint32(len(p.slots))
 		slot := &p.slots[index]
 		if slot.available.CompareAndSwap(true, false) {
+			p.acquired()
 			return Batch[T]{slot: slot}, true
 		}
 	}
@@ -167,12 +221,16 @@ func (p *Pool[T]) Release(batch *Batch[T]) {
 	if p == nil || batch == nil || batch.slot == nil {
 		return
 	}
+	if batch.scope != nil {
+		batch.scope.consumed = true
+	}
 
 	if p.clearOnRelease {
 		clear(batch.slot.values)
 	}
 
 	batch.slot.length = 0
+	p.inUse.Add(^uint32(0))
 	batch.slot.available.Store(true)
 	*batch = Batch[T]{}
 }

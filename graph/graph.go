@@ -3,7 +3,9 @@ package graph
 import (
 	"errors"
 
+	"github.com/asharipov/gpf/batch"
 	"github.com/asharipov/gpf/node"
+	"github.com/asharipov/gpf/numa"
 	"github.com/asharipov/gpf/queue"
 )
 
@@ -43,31 +45,86 @@ const (
 // changed by callers. Factories and callbacks remain dormant until a future
 // runtime stage.
 type Definition struct {
-	owner        *graphOwner
-	nodes        []nodeMetadata
-	edges        []edgeMetadata
-	edgeBindings []edgeBinding
-	forward      []ValidationAdjacency
-	reverse      []ValidationAdjacency
-	order        []NodeID
-	placements   []GroupID
-	groups       []groupPlan
-	edgeRemote   []bool
+	planningMode       bool
+	explicitPlacements []GroupID
+	constraints        PlanningConstraints
+	execution          *Definition
+	nodeInstances      []nodeInstance
+	groupInstances     []groupInstance
+	edgeInstances      []edgeInstance
+	counters           []counterDefinition
+	workerTiming       *WorkerTimingConfig
+	timing             *TimingConfig
+	logger             *LoggerConfig
+	owner              *graphOwner
+	nodes              []nodeMetadata
+	edges              []edgeMetadata
+	edgeBindings       []edgeBinding
+	forward            []ValidationAdjacency
+	reverse            []ValidationAdjacency
+	order              []NodeID
+	placements         []GroupID
+	groups             []groupPlan
+	edgeRemote         []bool
+	edgeQueuePlans     []EdgeQueuePlan
+}
+
+// AutomaticNodeAssignment maps one physical node to its proposed plan group.
+type AutomaticNodeAssignment struct {
+	NodeID, LogicalNodeID NodeID
+	Replica               uint32
+	GroupID               GroupID
+}
+
+// PlannedGroup is one proposed group and its explicit CPU-binding status.
+type PlannedGroup struct {
+	GroupID, LogicalGroupID GroupID
+	Replica                 uint32
+	CPU                     int
+	CPUBound                bool
+	NUMA                    numa.Placement
+}
+
+// AutomaticGroupPreview is a copied pure planning result, never an executable Definition.
+type AutomaticGroupPreview struct {
+	Groups                              []PlannedGroup
+	Nodes                               []AutomaticNodeAssignment
+	Edges                               []EdgeQueuePlan
+	Constraints                         PlanningConstraints
+	RemoteEdgesBefore, RemoteEdgesAfter uint32
+	Rejections                          []MergeRejection
+	CPUComplete                         bool
+	owner                               *graphOwner
+	revision                            uint64
+	logical                             *Definition
+	execution                           *Definition
+	requiredGroups                      []PlannedGroup
 }
 
 // Builder collects mutable node-registration metadata. Builders must not be copied.
 type Builder struct {
-	owner        *graphOwner
-	state        builderState
-	nextNodeID   NodeID
-	nodes        []nodeMetadata
-	inputs       map[endpointID]*inputMetadata
-	outputs      map[endpointID]*outputMetadata
-	edges        []edgeMetadata
-	edgeBindings []edgeBinding
-	placements   map[NodeID]GroupID
-	cpuBindings  map[GroupID]int
-	definition   *Definition
+	revision             uint64
+	automaticCPUs        map[GroupID]int
+	automaticCPURevision uint64
+	planningMode         bool
+	replicas             map[GroupID]replicaConfig
+	nodePools            map[NodeID]nodePoolConfig
+	counters             map[counterDefinition]struct{}
+	workerTiming         *WorkerTimingConfig
+	timing               *TimingConfig
+	logger               *LoggerConfig
+	owner                *graphOwner
+	state                builderState
+	nextNodeID           NodeID
+	nodes                []nodeMetadata
+	inputs               map[endpointID]*inputMetadata
+	outputs              map[endpointID]*outputMetadata
+	edges                []edgeMetadata
+	edgeBindings         []edgeBinding
+	placements           map[NodeID]GroupID
+	cpuBindings          map[GroupID]int
+	numaBindings         map[GroupID]numa.Placement
+	definition           *Definition
 }
 
 type graphOwner struct{ _ byte }
@@ -116,8 +173,43 @@ var (
 	// ErrGroupCPUAssigned reports a second CPU binding for one group.
 	ErrGroupCPUAssigned = errors.New("graph group CPU already assigned")
 	// ErrCPUAlreadyBound reports a CPU bound to another effective group.
-	ErrCPUAlreadyBound = errors.New("graph CPU already bound")
+	ErrCPUAlreadyBound     = errors.New("graph CPU already bound")
+	ErrGroupNUMAConfigured = errors.New("graph group NUMA placement already configured")
 )
+
+// SetGroupNUMA records optional inactive NUMA intent for an effective group.
+func SetGroupNUMA(builder *Builder, group GroupID, placement numa.Placement) error {
+	if builder == nil || builder.owner == nil || builder.state == builderInvalid {
+		return ErrInvalidBuilder
+	}
+	if builder.state == builderSealed {
+		return ErrBuilderSealed
+	}
+	if group == InvalidGroupID {
+		return ErrInvalidGroupID
+	}
+	if err := placement.Validate(); err != nil {
+		return err
+	}
+	if !effectiveGroups(builder.nodes, builder.placements)[group] {
+		return ErrUnknownGroup
+	}
+	if _, exists := builder.numaBindings[group]; exists {
+		return ErrGroupNUMAConfigured
+	}
+	if builder.numaBindings == nil {
+		builder.numaBindings = make(map[GroupID]numa.Placement)
+	}
+	builder.numaBindings[group] = placement
+	builder.revision++
+	return nil
+}
+
+// AllocatorDescriptors contains typed inactive allocator hooks for edge storage.
+type AllocatorDescriptors[T any] struct {
+	Pool  batch.Allocator[T]
+	Queue queue.Allocator[T]
+}
 
 // Place assigns one registered node to a fixed nonzero execution group.
 //
@@ -144,6 +236,21 @@ func Place(builder *Builder, node NodeID, group GroupID) error {
 		builder.placements = make(map[NodeID]GroupID)
 	}
 	builder.placements[node] = group
+	builder.revision++
+	return nil
+}
+
+// EnableAutomaticPlanning opts unplaced nodes into free placement constraints.
+// It does not perform automatic merging or change the fixed manual Build plan.
+func EnableAutomaticPlanning(builder *Builder) error {
+	if builder == nil || builder.state == builderInvalid || builder.owner == nil {
+		return ErrInvalidBuilder
+	}
+	if builder.state == builderSealed {
+		return ErrBuilderSealed
+	}
+	builder.planningMode = true
+	builder.revision++
 	return nil
 }
 
@@ -181,6 +288,7 @@ func BindCPU(builder *Builder, group GroupID, cpu int) error {
 		builder.cpuBindings = make(map[GroupID]int)
 	}
 	builder.cpuBindings[group] = cpu
+	builder.revision++
 	return nil
 }
 
@@ -282,6 +390,7 @@ type registrationKind uint8
 const (
 	explicitRegistration registrationKind = iota + 1
 	closureRegistration
+	ingressRegistration
 )
 
 const (
@@ -316,11 +425,18 @@ type staticValidationDescriptor struct {
 }
 
 type normalizationTarget struct {
-	edges       *edgeBindingTarget
-	currentNode NodeID
-	runners     []runner
-	lifecycle   lifecycle
-	committed   bool
+	currentReplica     uint32
+	currentLogicalNode NodeID
+	executor           *Executor
+	eventSink          func(GroupID) func(node.ErrorEvent) bool
+	currentGroup       GroupID
+	sourceAllowed      func() bool
+	metrics            *metricStore
+	edges              *edgeBindingTarget
+	currentNode        NodeID
+	runners            []runner
+	lifecycle          lifecycle
+	committed          bool
 }
 
 type lifecycle struct {
@@ -354,16 +470,24 @@ type outputMetadata struct {
 }
 
 type edgeMetadata struct {
-	id         EdgeID
-	source     endpointID
-	target     endpointID
-	config     queue.Config
-	hasFactory bool
-	isError    bool
+	id             EdgeID
+	source         endpointID
+	target         endpointID
+	config         queue.Config
+	hasFactory     bool
+	isError        bool
+	fanInMerge     EdgeID
+	fanInCount     uint32
+	broadcastGroup EdgeID
+	broadcastIndex uint32
+	broadcastCount uint32
+	shardGroup     EdgeID
+	shardIndex     uint32
+	shardCount     uint32
 }
 
 // edgeBinding retains a monomorphized path to one runtime-local edge.
-type edgeBinding func(*edgeBindingTarget, bool) error
+type edgeBinding func(*edgeBindingTarget, EdgeQueuePlan) error
 
 func (b *Builder) register(metadata nodeMetadata) (NodeID, error) {
 	if b == nil || b.state == builderInvalid || b.owner == nil {
@@ -380,6 +504,7 @@ func (b *Builder) register(metadata nodeMetadata) (NodeID, error) {
 	b.nextNodeID++
 	metadata.nodeID = nodeID
 	b.nodes = append(b.nodes, metadata)
+	b.revision++
 	if b.inputs == nil {
 		b.inputs = make(map[endpointID]*inputMetadata)
 	}
@@ -407,6 +532,8 @@ type EdgeConfig[T any] struct {
 	BatchCapacity uint32
 	Policy        queue.Policy
 	Factory       queue.Factory[T]
+	NUMA          numa.Placement
+	Allocators    AllocatorDescriptors[T]
 }
 
 var (
@@ -418,6 +545,12 @@ var (
 	ErrInputConnected = errors.New("graph input already has a producer")
 	// ErrFanOutUnsupported reports an output that already has a consumer.
 	ErrFanOutUnsupported = errors.New("graph output fan-out is unsupported")
+	ErrFanInUnsupported  = errors.New("graph fan-in requires multiple distinct producers")
+	ErrInvalidFanIn      = errors.New("invalid graph fan-in producer set")
+	// ErrBroadcastParallelExpansion reports broadcast endpoints expanded by replicas or node pools.
+	ErrBroadcastParallelExpansion = errors.New("broadcast endpoints cannot be replicated or pooled")
+	// ErrShardParallelExpansion reports sharding endpoints expanded by replicas or node pools.
+	ErrShardParallelExpansion = errors.New("sharding endpoints cannot be replicated or pooled")
 	// ErrInvalidEdgeConfig reports an invalid future queue configuration.
 	ErrInvalidEdgeConfig = errors.New("invalid graph edge configuration")
 )
@@ -429,6 +562,7 @@ type EdgeConfigError struct {
 	capacityInvalid      bool
 	batchCapacityInvalid bool
 	policyInvalid        bool
+	numaInvalid          bool
 }
 
 func (e *EdgeConfigError) Error() string { return ErrInvalidEdgeConfig.Error() }
@@ -440,12 +574,14 @@ func validateEdgeConfig(config queue.Config) error {
 	capacityInvalid := config.Capacity == 0
 	batchCapacityInvalid := config.BatchCapacity == 0
 	policyInvalid := config.Policy != queue.Drop && config.Policy != queue.Wait
-	if capacityInvalid || batchCapacityInvalid || policyInvalid {
+	numaInvalid := config.NUMA.Validate() != nil
+	if capacityInvalid || batchCapacityInvalid || policyInvalid || numaInvalid {
 		return &EdgeConfigError{
 			Config:               config,
 			capacityInvalid:      capacityInvalid,
 			batchCapacityInvalid: batchCapacityInvalid,
 			policyInvalid:        policyInvalid,
+			numaInvalid:          numaInvalid,
 		}
 	}
 	return nil
@@ -500,13 +636,13 @@ func Connect[T any](
 		return InvalidEdgeID, ErrFanOutUnsupported
 	}
 
-	queueConfig := queue.Config{Capacity: config.Capacity, BatchCapacity: config.BatchCapacity, Policy: config.Policy}
+	queueConfig := queue.Config{Capacity: config.Capacity, BatchCapacity: config.BatchCapacity, Policy: config.Policy, NUMA: config.NUMA}
 	if err := validateEdgeConfig(queueConfig); err != nil {
 		return InvalidEdgeID, err
 	}
 
 	id := EdgeID(len(builder.edges) + 1)
-	binding := futureBinding(id, source, target, queueConfig, config.Factory, false)
+	binding := futureBinding(id, source, target, queueConfig, config.Factory, false, config.Allocators)
 	builder.edges = append(builder.edges, edgeMetadata{
 		id:         id,
 		source:     source,
@@ -515,6 +651,7 @@ func Connect[T any](
 		hasFactory: config.Factory != nil,
 		isError:    false,
 	})
+	builder.revision++
 	builder.edgeBindings = append(builder.edgeBindings, binding)
 	inputMetadata.hasProducer = true
 	outputMetadata.hasConsumer = true
@@ -564,7 +701,7 @@ func ConnectError[E any](
 	if outputMetadata.hasConsumer {
 		return InvalidEdgeID, ErrFanOutUnsupported
 	}
-	queueConfig := queue.Config{Capacity: config.Capacity, BatchCapacity: config.BatchCapacity, Policy: config.Policy}
+	queueConfig := queue.Config{Capacity: config.Capacity, BatchCapacity: config.BatchCapacity, Policy: config.Policy, NUMA: config.NUMA}
 	if err := validateEdgeConfig(queueConfig); err != nil {
 		return InvalidEdgeID, err
 	}
@@ -578,7 +715,8 @@ func ConnectError[E any](
 		hasFactory: config.Factory != nil,
 		isError:    true,
 	})
-	builder.edgeBindings = append(builder.edgeBindings, futureBinding(id, source, target, queueConfig, config.Factory, true))
+	builder.revision++
+	builder.edgeBindings = append(builder.edgeBindings, futureBinding(id, source, target, queueConfig, config.Factory, true, config.Allocators))
 	inputMetadata.hasProducer = true
 	outputMetadata.hasConsumer = true
 	return id, nil

@@ -36,6 +36,7 @@ type Result[E any] struct {
 // acquire or commit a batch. One output can acquire and commit at most one
 // batch during a handler invocation.
 type Output[T any] struct {
+	scope     batch.InputScope[T]
 	acquire   func() (batch.Batch[T], bool)
 	acquired  batch.Batch[T]
 	staged    batch.Batch[T]
@@ -52,7 +53,7 @@ func (o *Output[T]) Acquire() (batch.Batch[T], bool) {
 		return batch.Batch[T]{}, false
 	}
 	o.acquired = b
-	return b, true
+	return o.scope.Begin(&o.acquired), true
 }
 
 // Commit moves one compatible batch to this output for post-handler
@@ -79,15 +80,27 @@ func InstallOutput[T any](o *Output[T], acquire func() (batch.Batch[T], bool)) {
 // FinalizeOutput releases abandoned or failed batches, or calls publish for a
 // successful committed batch. A false result retains a pending batch for retry.
 func FinalizeOutput[T any](o *Output[T], failed bool, publish func(batch.Batch[T]) bool) bool {
+	return FinalizeOutputObserved(o, failed, publish, nil)
+}
+
+// FinalizeOutputObserved is the graph runtime's typed accounting hook. Discard
+// observes only committed failed outputs before release; abandoned acquisitions
+// are not committed-work losses. The callback must not change ownership.
+func FinalizeOutputObserved[T any](o *Output[T], failed bool, publish func(batch.Batch[T]) bool, discard func(batch.Batch[T])) bool {
 	if o == nil || o.acquire == nil {
 		return true
 	}
+	// The acquired copy may have been moved/released by the handler, or may be
+	// abandoned while a different compatible input is committed to this output.
+	o.scope.End(&o.acquired)
 	if !o.committed {
-		o.acquired.Release()
 		*o = Output[T]{acquire: o.acquire}
 		return true
 	}
 	if failed {
+		if discard != nil {
+			discard(o.staged)
+		}
 		o.staged.Release()
 		*o = Output[T]{acquire: o.acquire}
 		return true
@@ -102,8 +115,10 @@ func FinalizeOutput[T any](o *Output[T], failed bool, publish func(batch.Batch[T
 // SourceHandler processes a source-like invocation with explicit state.
 type SourceHandler[S any, O OutputSet, E any] func(state *S, outputs *O) Result[E]
 
-// InputHandler processes one owned input batch with explicit state. A future
-// runtime releases input unless the handler moves it to a compatible output.
+// InputHandler processes one owned input batch with explicit state. The
+// executor releases input after the call unless the handler moves or explicitly
+// releases its by-value copy. Moving input to an output transfers the original
+// pool slot; the runner's retained cleanup handle will not release it again.
 type InputHandler[S, I any, O OutputSet, E any] func(
 	state *S,
 	input batch.Batch[I],

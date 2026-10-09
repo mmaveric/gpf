@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -24,14 +25,30 @@ var (
 // Executor owns the workers and resources materialized for one Start. Drain
 // and Close are sequential lifecycle operations; concurrent calls are unsupported.
 type Executor struct {
-	workers     []*executorWorker
-	runners     []runner
-	drains      []func()
-	queuesEmpty []func() bool
-	statuses    []AffinityStatus
-	sources     atomic.Bool
-	stopped     bool
-	stopErr     error
+	closing      atomic.Bool
+	owner        *graphOwner
+	ingresses    map[NodeID]unsafe.Pointer
+	logger       *runtimeLogger
+	participants []stopParticipant
+	metrics      *metricStore
+	edges        *edgeBindingTarget
+	workers      []*executorWorker
+	runners      []runner
+	drains       []func()
+	queuesEmpty  []func() bool
+	statuses     []AffinityStatus
+	sources      atomic.Bool
+	stopped      bool
+	stopErr      error
+}
+
+// stopParticipant connects runtime-local admission and asynchronous components
+// to the executor's single stop budget. Callbacks must return cooperatively.
+type stopParticipant struct {
+	closeAdmission func(context.Context) error
+	drain          func(context.Context) error
+	discard        func()
+	join           func() error
 }
 
 type workerCommand uint8
@@ -51,12 +68,20 @@ type workerControl struct {
 }
 
 type executorWorker struct {
-	group    GroupID
-	cpu      int
-	runners  []runner
-	commands chan workerControl
-	ready    chan AffinityStatus
-	done     chan struct{}
+	paused       atomic.Bool
+	closing      *atomic.Bool
+	logicalGroup GroupID
+	replica      uint32
+	logicalNode  NodeID
+	nodeWorker   uint32
+	isNodeWorker bool
+	metrics      *groupCounters
+	group        GroupID
+	cpu          int
+	runners      []runner
+	commands     chan workerControl
+	ready        chan AffinityStatus
+	done         chan struct{}
 }
 
 type runner struct {
@@ -77,15 +102,19 @@ const (
 	AffinityOutcomeLockedThreadFallback
 )
 
-// AffinityStatus is one immutable per-group CPU-affinity startup result.
+// AffinityStatus is one immutable per-physical-group CPU-affinity startup result.
 type AffinityStatus struct {
-	GroupID GroupID
-	CPU     int
-	Outcome AffinityOutcome
-	Warning error
+	Replica     uint32
+	GroupID     GroupID
+	NodeID      NodeID
+	NodeReplica uint32
+	CPU         int
+	Outcome     AffinityOutcome
+	Warning     error
 }
 
-// AffinityStatus returns an independent ordered snapshot of startup outcomes.
+// AffinityStatus returns an independent physical-worker ordered snapshot of
+// startup outcomes, including logical group and zero-based replica identity.
 func (e *Executor) AffinityStatus() []AffinityStatus {
 	if e == nil || len(e.statuses) == 0 {
 		return nil
@@ -94,10 +123,13 @@ func (e *Executor) AffinityStatus() []AffinityStatus {
 }
 
 type edgeBindingTarget struct {
+	metrics     *metricStore
+	discarding  bool
 	outputs     []edgeOutputBinding
 	inputs      []edgeInputBinding
 	drains      []func()
 	queuesEmpty []func() bool
+	onStop      []func()
 }
 
 type edgeOutputBinding struct {
@@ -152,9 +184,10 @@ func (q *localRing[T]) len() uint32 { return q.count }
 // remoteRing is a bounded typed SPSC queue. Tail publication transfers a
 // fully-written slot to the consumer; head publication returns that slot.
 type remoteRing[T any] struct {
-	values []batch.Batch[T]
-	head   atomic.Uint32
-	tail   atomic.Uint32
+	values                []batch.Batch[T]
+	head                  atomic.Uint64
+	tail                  atomic.Uint64
+	readIndex, writeIndex uint32
 }
 
 func newRemoteRing[T any](capacity uint32) *remoteRing[T] {
@@ -163,10 +196,14 @@ func newRemoteRing[T any](capacity uint32) *remoteRing[T] {
 
 func (q *remoteRing[T]) tryPush(value batch.Batch[T]) bool {
 	tail := q.tail.Load()
-	if tail-q.head.Load() == uint32(len(q.values)) {
+	if tail-q.head.Load() == uint64(len(q.values)) {
 		return false
 	}
-	q.values[tail%uint32(len(q.values))] = value
+	q.values[q.writeIndex] = value
+	q.writeIndex++
+	if q.writeIndex == uint32(len(q.values)) {
+		q.writeIndex = 0
+	}
 	q.tail.Store(tail + 1)
 	return true
 }
@@ -179,17 +216,80 @@ func (q *remoteRing[T]) tryPop(value *batch.Batch[T]) bool {
 	if q.tail.Load() == head {
 		return false
 	}
-	*value = q.values[head%uint32(len(q.values))].Move()
+	*value = q.values[q.readIndex].Move()
+	q.readIndex++
+	if q.readIndex == uint32(len(q.values)) {
+		q.readIndex = 0
+	}
 	q.head.Store(head + 1)
 	return true
 }
 
-func (q *remoteRing[T]) len() uint32 { return q.tail.Load() - q.head.Load() }
+func (q *remoteRing[T]) len() uint32 {
+	used := q.tail.Load() - q.head.Load()
+	if used > uint64(len(q.values)) {
+		return uint32(len(q.values))
+	}
+	return uint32(used)
+}
+
+func queueOperationsForModel[T any](model QueueModel, config queue.Config, factory queue.Factory[T], descriptors ...queue.Allocator[T]) (queue.QueueOps[T], error) {
+	if len(descriptors) != 0 {
+		runtime.KeepAlive(descriptors[0])
+	}
+	if config.Capacity == 0 {
+		return queue.QueueOps[T]{}, queue.ErrInvalidCapacity
+	}
+	if model != QueueModelLocal && factory != nil {
+		return queue.QueueOps[T]{}, ErrIncompatibleQueueFactory
+	}
+	switch model {
+	case QueueModelLocal:
+		if factory != nil {
+			ops, err := factory(config)
+			if err != nil {
+				return queue.QueueOps[T]{}, err
+			}
+			if ops.TryPush == nil || ops.TryPop == nil || ops.Len == nil {
+				return queue.QueueOps[T]{}, ErrInvalidQueueOps
+			}
+			return ops, nil
+		}
+		ring := newLocalRing[T](config.Capacity)
+		return queue.QueueOps[T]{TryPush: ring.tryPush, TryPop: ring.tryPop, Len: ring.len}, nil
+	case QueueModelSPSC:
+		ring := newRemoteRing[T](config.Capacity)
+		return queue.QueueOps[T]{TryPush: ring.tryPush, TryPop: ring.tryPop, Len: ring.len}, nil
+	case QueueModelMPSC:
+		ring, err := queue.NewMPSC[T](config.Capacity)
+		if err != nil {
+			return queue.QueueOps[T]{}, err
+		}
+		return ring.Ops(), nil
+	case QueueModelSPMC:
+		ring, err := queue.NewSPMC[T](config.Capacity)
+		if err != nil {
+			return queue.QueueOps[T]{}, err
+		}
+		return ring.Ops(), nil
+	case QueueModelMPMC:
+		ring, err := queue.NewMPMC[T](config.Capacity)
+		if err != nil {
+			return queue.QueueOps[T]{}, err
+		}
+		return ring.Ops(), nil
+	default:
+		return queue.QueueOps[T]{}, ErrInvalidDefinition
+	}
+}
 
 // Start materializes fixed-plan edge resources and node factories before
 // publishing exactly one worker per planned group.
 func (d *Definition) Start() (*Executor, error) {
-	if d == nil || d.owner == nil || len(d.nodes) == 0 || len(d.edgeBindings) != len(d.edges) || len(d.edgeRemote) != len(d.edges) || len(d.placements) != len(d.nodes)+1 || len(d.groups) == 0 {
+	if d != nil && d.execution != nil {
+		return d.execution.Start()
+	}
+	if d == nil || d.owner == nil || len(d.nodes) == 0 || len(d.edgeBindings) != len(d.edges) || len(d.edgeRemote) != len(d.edges) || len(d.edgeQueuePlans) != len(d.edges) || len(d.placements) != len(d.nodes)+1 || len(d.groups) == 0 {
 		return nil, ErrInvalidDefinition
 	}
 	for index, group := range d.groups {
@@ -198,19 +298,51 @@ func (d *Definition) Start() (*Executor, error) {
 		}
 	}
 
-	edges := &edgeBindingTarget{}
+	for index, item := range d.nodes {
+		if item.nodeID != NodeID(index+1) {
+			return nil, ErrInvalidDefinition
+		}
+	}
+	for index, edge := range d.edges {
+		if edge.source.nodeID == 0 || int(edge.source.nodeID) > len(d.nodes) || edge.target.nodeID == 0 || int(edge.target.nodeID) > len(d.nodes) {
+			return nil, ErrInvalidDefinition
+		}
+		plan := d.edgeQueuePlans[index]
+		model, err := ResolveQueueModel(plan.ProducerWorkers, plan.ConsumerWorkers, !plan.Remote)
+		if err != nil || plan.Model != model || plan.EdgeID != edge.id || edge.id != EdgeID(index+1) || plan.Remote != d.edgeRemote[index] {
+			return nil, ErrInvalidDefinition
+		}
+		if edge.hasFactory && plan.Model != QueueModelLocal {
+			return nil, ErrIncompatibleQueueFactory
+		}
+	}
+	metrics := newMetricStore(d)
+	edges := &edgeBindingTarget{metrics: metrics}
 	for index, bind := range d.edgeBindings {
-		if err := bind(edges, d.edgeRemote[index]); err != nil {
+		plan := d.edgeQueuePlans[index]
+		if err := bind(edges, plan); err != nil {
 			return nil, rollback(nil, edges, nil, err)
 		}
 	}
-	target := normalizationTarget{edges: edges}
+	e := &Executor{owner: d.owner, metrics: metrics, edges: edges, drains: edges.drains, queuesEmpty: edges.queuesEmpty}
+	target := normalizationTarget{executor: e, edges: edges, metrics: metrics, sourceAllowed: e.sources.Load}
+	if d.logger != nil {
+		e.logger = newRuntimeLogger(d.groups, *d.logger, metrics)
+		target.eventSink = e.logger.sink
+		e.participants = append(e.participants, stopParticipant{drain: e.logger.drain, discard: e.logger.discard, join: e.logger.join})
+	}
 	for _, nodeID := range d.order {
 		index := int(nodeID) - 1
 		if index < 0 || index >= len(d.nodes) || d.nodes[index].nodeID != nodeID || d.placements[nodeID] == InvalidGroupID {
 			return nil, rollback(&target, edges, nil, ErrInvalidDefinition)
 		}
 		target.currentNode = nodeID
+		target.currentLogicalNode = nodeID
+		target.currentGroup = d.placements[nodeID]
+		if len(d.nodeInstances) != 0 {
+			target.currentReplica = d.nodeInstances[index].replica
+			target.currentLogicalNode = d.nodeInstances[index].logical
+		}
 		target.lifecycle = lifecycle{}
 		target.committed = false
 		if err := d.nodes[index].normalizer(&target); err != nil {
@@ -223,18 +355,25 @@ func (d *Definition) Start() (*Executor, error) {
 		target.committed = true
 	}
 
-	e := &Executor{
-		drains:      edges.drains,
-		queuesEmpty: edges.queuesEmpty,
-		runners:     target.runners,
-	}
-	for _, group := range d.groups {
+	e.runners = target.runners
+	for groupIndex, group := range d.groups {
 		worker := &executorWorker{
+			metrics:  metrics.groups[groupIndex],
 			group:    group.id,
 			cpu:      group.cpu,
 			commands: make(chan workerControl),
 			ready:    make(chan AffinityStatus, 1),
 			done:     make(chan struct{}),
+		}
+		worker.logicalGroup = group.id
+		worker.closing = &e.closing
+		if len(d.groupInstances) != 0 {
+			worker.logicalGroup = d.groupInstances[groupIndex].logical
+			worker.replica = d.groupInstances[groupIndex].replica
+		}
+		if group.nodePoolWorker && len(group.nodes) == 1 {
+			instance := d.nodeInstances[group.nodes[0]-1]
+			worker.logicalNode, worker.nodeWorker, worker.isNodeWorker = instance.logical, instance.replica, true
 		}
 		for _, item := range target.runners {
 			if item.group == group.id {
@@ -256,6 +395,9 @@ func (d *Definition) Start() (*Executor, error) {
 			return nil, rollback(&target, edges, e, err)
 		}
 	}
+	if e.logger != nil {
+		go e.logger.loop()
+	}
 	e.sources.Store(true)
 	for _, worker := range e.workers {
 		e.control(worker, workerStart, nil)
@@ -264,6 +406,9 @@ func (d *Definition) Start() (*Executor, error) {
 }
 
 func rollback(target *normalizationTarget, edges *edgeBindingTarget, executor *Executor, trigger error) error {
+	if edges.metrics != nil {
+		edges.metrics.live.Store(false)
+	}
 	if target != nil {
 		for _, runner := range target.runners {
 			if runner.discard != nil {
@@ -292,32 +437,69 @@ func rollback(target *normalizationTarget, edges *edgeBindingTarget, executor *E
 	if executor != nil {
 		executor.stopWorkers()
 	}
+	for _, release := range edges.onStop {
+		release()
+	}
+	edges.onStop = nil
 	return errors.Join(trigger, cleanup)
 }
 
 // Drain disables sources, drains accepted work through a stable paused snapshot,
 // and closes owned lifecycles.
-func (e *Executor) Drain() error { return e.stop(true) }
+func (e *Executor) Drain() error { return e.DrainContext(context.Background()) }
+
+// DrainContext drains accepted work within one cooperative shutdown budget.
+// Cancellation requests forced cleanup at a safe worker barrier; it cannot
+// interrupt a user handler, queue callback, or lifecycle callback that does not
+// return. ctx must not be nil. Repeated stop calls retain the final error.
+func (e *Executor) DrainContext(ctx context.Context) error {
+	if ctx == nil {
+		panic("graph: nil drain context")
+	}
+	return e.stop(ctx, true)
+}
 
 // Close discards queued and pending work from a paused snapshot before closing
 // owned lifecycles.
-func (e *Executor) Close() error { return e.stop(false) }
+func (e *Executor) Close() error { return e.stop(context.Background(), false) }
 
-func (e *Executor) stop(drain bool) error {
+func (e *Executor) stop(ctx context.Context, drain bool) error {
 	if e == nil || e.stopped {
 		if e == nil {
 			return nil
 		}
 		return e.stopErr
 	}
-	e.pauseWorkers()
+	var stopErr error
+	for _, participant := range e.participants {
+		if participant.closeAdmission != nil {
+			stopErr = errors.Join(stopErr, participant.closeAdmission(ctx))
+		}
+	}
 	e.sources.Store(false)
+	if !drain {
+		e.closing.Store(true)
+	}
+	e.pauseWorkers()
+	forced := !drain || stopErr != nil
 	if drain {
-		for !e.empty() {
+		if err := drainCancellation(ctx); err != nil {
+			stopErr = errors.Join(stopErr, err)
+			forced = true
+		}
+		for !forced && !e.empty() {
 			e.resumeWorkers()
 			e.pauseWorkers()
+			if err := drainCancellation(ctx); err != nil {
+				stopErr = errors.Join(stopErr, err)
+				forced = true
+			}
 		}
-	} else {
+	}
+	if forced {
+		if e.edges != nil {
+			e.edges.discarding = true
+		}
 		for _, worker := range e.workers {
 			for _, runner := range worker.runners {
 				if runner.discard != nil {
@@ -329,10 +511,60 @@ func (e *Executor) stop(drain bool) error {
 	for _, discardQueue := range e.drains {
 		discardQueue()
 	}
-	e.stopErr = e.closeLifecycles()
+	if e.metrics != nil {
+		for _, edge := range e.metrics.edges {
+			edge.depth.Store(0)
+		}
+	}
+	for _, participant := range e.participants {
+		if drain && !forced {
+			if err := drainCancellation(ctx); err != nil {
+				stopErr = errors.Join(stopErr, err)
+				forced = true
+			}
+		}
+		if !forced && participant.drain != nil {
+			if err := participant.drain(ctx); err != nil {
+				stopErr = errors.Join(stopErr, err, drainCancellation(ctx))
+				forced = true
+			}
+			if !forced {
+				if err := drainCancellation(ctx); err != nil {
+					stopErr = errors.Join(stopErr, err)
+					forced = true
+				}
+			}
+		}
+		if forced && participant.discard != nil {
+			participant.discard()
+		}
+	}
+	stopErr = errors.Join(stopErr, e.closeLifecycles())
 	e.stopWorkers()
+	if e.edges != nil {
+		for _, release := range e.edges.onStop {
+			release()
+		}
+		e.edges.onStop = nil
+	}
+	for _, participant := range e.participants {
+		if participant.join != nil {
+			stopErr = errors.Join(stopErr, participant.join())
+		}
+	}
+	e.stopErr = stopErr
+	if e.metrics != nil {
+		e.metrics.live.Store(false)
+	}
 	e.stopped = true
 	return e.stopErr
+}
+
+func drainCancellation(ctx context.Context) error {
+	if ctx.Err() == nil {
+		return nil
+	}
+	return errors.Join(ctx.Err(), context.Cause(ctx))
 }
 
 func (e *Executor) empty() bool {
@@ -353,13 +585,18 @@ func (e *Executor) empty() bool {
 
 func (e *Executor) pauseWorkers() {
 	for _, worker := range e.workers {
+		if worker.paused.Load() {
+			continue
+		}
 		e.control(worker, workerPause, nil)
 	}
 }
 
 func (e *Executor) resumeWorkers() {
 	for _, worker := range e.workers {
-		e.control(worker, workerResume, nil)
+		if worker.paused.Load() {
+			e.control(worker, workerResume, nil)
+		}
 	}
 }
 
@@ -376,7 +613,10 @@ func (w *executorWorker) loop(sources *atomic.Bool) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer close(w.done)
-	status := AffinityStatus{GroupID: w.group, CPU: w.cpu, Outcome: AffinityOutcomeApplied}
+	status := AffinityStatus{GroupID: w.logicalGroup, Replica: w.replica, NodeID: w.logicalNode, NodeReplica: w.nodeWorker, CPU: w.cpu, Outcome: AffinityOutcomeApplied}
+	if status.GroupID == 0 {
+		status.GroupID = w.group
+	}
 	if err := newAffinityAdapter().bind(w.cpu); err != nil {
 		status.Outcome = AffinityOutcomeLockedThreadFallback
 		status.Warning = fmt.Errorf("%w: %w", ErrAffinityUnavailable, err)
@@ -421,11 +661,13 @@ running:
 func (w *executorWorker) handle(control workerControl) bool {
 	switch control.command {
 	case workerPause:
+		w.paused.Store(true)
 		w.respond(control, nil)
 		for {
 			control := <-w.commands
 			switch control.command {
 			case workerResume:
+				w.paused.Store(false)
 				w.respond(control, nil)
 				return false
 			case workerStop:
@@ -445,14 +687,25 @@ func (w *executorWorker) handle(control workerControl) bool {
 }
 
 func (w *executorWorker) pass(sources *atomic.Bool) bool {
+	var started uint64
+	var measured bool
+	if w.metrics != nil {
+		started, measured = w.metrics.beginTiming()
+	}
 	progress := false
 	for _, runner := range w.runners {
-		if runner.source && !sources.Load() {
+		if runner.source && w.closing != nil && w.closing.Load() {
+			continue
+		}
+		if runner.source && !sources.Load() && (runner.pending == nil || !runner.pending()) {
 			continue
 		}
 		if runner.run() {
 			progress = true
 		}
+	}
+	if w.metrics != nil {
+		w.metrics.recordPass(progress, started, measured)
 	}
 	return progress
 }
@@ -535,6 +788,15 @@ func (t *normalizationTarget) bindError(nodeID NodeID, output unsafe.Pointer) fu
 	return func(bool) bool { return true }
 }
 
+func (t *normalizationTarget) errorConnected(nodeID NodeID) bool {
+	for _, binding := range t.edges.outputs {
+		if binding.isError && binding.endpoint.nodeID == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *normalizationTarget) finalize(finalizers []func(bool) bool, failed bool) bool {
 	complete := true
 	for _, finalize := range finalizers {
@@ -545,61 +807,133 @@ func (t *normalizationTarget) finalize(finalizers []func(bool) bool, failed bool
 	return complete
 }
 
-func futureBinding[T any](id EdgeID, source, target endpointID, config queue.Config, factory queue.Factory[T], isError bool) edgeBinding {
-	return func(bindings *edgeBindingTarget, remote bool) error {
+func futureBinding[T any](id EdgeID, source, target endpointID, config queue.Config, factory queue.Factory[T], isError bool, descriptors ...AllocatorDescriptors[T]) edgeBinding {
+	var allocator AllocatorDescriptors[T]
+	if len(descriptors) != 0 {
+		allocator = descriptors[0]
+	}
+	return func(bindings *edgeBindingTarget, plan EdgeQueuePlan) error {
+		model, err := ResolveQueueModel(plan.ProducerWorkers, plan.ConsumerWorkers, !plan.Remote)
+		bindingID := plan.bindingID
+		if bindingID == 0 {
+			bindingID = plan.EdgeID
+		}
+		if err != nil || bindingID != id || model != plan.Model {
+			return ErrInvalidDefinition
+		}
+		id := plan.EdgeID
+		if factory != nil && plan.Model != QueueModelLocal {
+			return ErrIncompatibleQueueFactory
+		}
+		metric := &edgeCounters{identity: EdgeMetrics{EdgeID: id, QueueCapacity: config.Capacity, ErrorEdge: isError, Remote: plan.Remote, NUMA: config.NUMA}}
+		if bindings.metrics != nil {
+			metric = bindings.metrics.edges[id-1]
+		}
 		if config.Capacity == math.MaxUint32 {
 			return fmt.Errorf("edge %d: %w", id, ErrInvalidDefinition)
 		}
-		pool, err := batch.NewPool[T](batch.PoolConfig{Capacity: config.Capacity + 1, BatchCapacity: config.BatchCapacity})
+		ops, err := queueOperationsForModel[T](plan.Model, config, factory, allocator.Queue)
 		if err != nil {
-			return fmt.Errorf("edge %d pool: %w", id, err)
+			return fmt.Errorf("edge %d queue model %s: %w", id, plan.Model, err)
 		}
-		var ops queue.QueueOps[T]
-		if remote {
-			ring := newRemoteRing[T](config.Capacity)
-			ops = queue.QueueOps[T]{TryPush: ring.tryPush, TryPop: ring.tryPop, Len: ring.len}
-		} else if factory == nil {
-			ring := newLocalRing[T](config.Capacity)
-			ops = queue.QueueOps[T]{TryPush: ring.tryPush, TryPop: ring.tryPop, Len: ring.len}
-		} else {
-			ops, err = factory(config)
+		sources, targets := []endpointID{source}, []endpointID{target}
+		if plan.endpoints != nil {
+			sources, targets = plan.endpoints.sources, plan.endpoints.targets
+		}
+		pools := make([]*batch.Pool[T], len(sources))
+		for index, source := range sources {
+			pool, err := batch.NewPoolWithOptions[T](batch.PoolOptions[T]{Config: batch.PoolConfig{Capacity: config.Capacity + 1, BatchCapacity: config.BatchCapacity, NUMA: config.NUMA, OwnerID: uint32(id)}, Allocator: allocator.Pool})
 			if err != nil {
-				return fmt.Errorf("edge %d queue factory: %w", id, err)
+				return fmt.Errorf("edge %d source %d pool: %w", id, source.nodeID, err)
 			}
-			if ops.TryPush == nil || ops.TryPop == nil || ops.Len == nil {
-				return fmt.Errorf("edge %d: %w", id, ErrInvalidQueueOps)
+			pools[index] = pool
+			if bindings.metrics != nil {
+				identity := metric.identity
+				identity.SourceNodeID = source.nodeID
+				if source.nodeID < NodeID(len(bindings.metrics.nodes)+1) {
+					identity.SourceGroupID = bindings.metrics.nodes[source.nodeID-1].identity.GroupID
+				}
+				sourceReplica := uint32(0)
+				if int(source.nodeID) <= len(bindings.metrics.nodes) {
+					sourceReplica = bindings.metrics.nodes[source.nodeID-1].identity.Replica
+				}
+				bindings.metrics.pools = append(bindings.metrics.pools, poolMetricsBinding{identity: PoolMetrics{EdgeID: identity.EdgeID, Replica: identity.Replica, SourceReplica: sourceReplica, SourceNodeID: identity.SourceNodeID, SourceGroupID: identity.SourceGroupID, NUMA: config.NUMA}, read: pool.Metrics})
 			}
 		}
-		bindings.outputs = append(bindings.outputs, edgeOutputBinding{
-			endpoint: source,
-			isError:  isError,
-			configure: func(pointer unsafe.Pointer) func(bool) bool {
-				output := (*node.Output[T])(pointer)
-				node.InstallOutput(output, pool.Acquire)
-				publish := func(value batch.Batch[T]) bool {
-					if ops.TryPush(value) {
-						return true
+		for sourceIndex, source := range sources {
+			pool := pools[sourceIndex]
+			bindings.outputs = append(bindings.outputs, edgeOutputBinding{
+				endpoint: source,
+				isError:  isError,
+				configure: func(pointer unsafe.Pointer) func(bool) bool {
+					output := (*node.Output[T])(pointer)
+					node.InstallOutput(output, func() (batch.Batch[T], bool) {
+						value, ok := pool.Acquire()
+						if !ok {
+							metric.producer.exhausted.Add(1)
+						}
+						return value, ok
+					})
+					pending := false
+					publish := func(value batch.Batch[T]) bool {
+						length := uint64(value.Len())
+						if pending {
+							metric.producer.retries.Add(1)
+						}
+						if ops.TryPush(value) {
+							metric.producer.accepted.Add(1)
+							metric.producer.elements.Add(length)
+							metric.sample(ops.Len())
+							pending = false
+							return true
+						}
+						if config.Policy == queue.Drop {
+							metric.producer.dropped.Add(1)
+							metric.producer.droppedElements.Add(length)
+							metric.sample(ops.Len())
+							value.Release()
+							return true
+						}
+						pending = true
+						metric.sample(ops.Len())
+						return false
 					}
-					if config.Policy == queue.Drop {
-						value.Release()
-						return true
+					return func(failed bool) bool {
+						return node.FinalizeOutputObserved(output, failed, publish, func(value batch.Batch[T]) {
+							if bindings.discarding {
+								metric.discard(value.Len())
+							} else {
+								metric.producer.failed.Add(1)
+								metric.producer.failedElements.Add(uint64(value.Len()))
+							}
+							pending = false
+						})
 					}
-					return false
-				}
-				return func(failed bool) bool {
-					return node.FinalizeOutput(output, failed, publish)
-				}
-			},
-		})
-		bindings.inputs = append(bindings.inputs, edgeInputBinding{
-			endpoint: target,
-			input: func(pointer unsafe.Pointer) {
-				*(*runtimeInput[T])(pointer) = runtimeInput[T]{ready: func() bool { return ops.Len() != 0 }, pop: ops.TryPop}
-			},
-		})
+				},
+			})
+		}
+		for _, target := range targets {
+			bindings.inputs = append(bindings.inputs, edgeInputBinding{
+				endpoint: target,
+				input: func(pointer unsafe.Pointer) {
+					*(*runtimeInput[T])(pointer) = runtimeInput[T]{ready: func() bool { return ops.Len() != 0 }, pop: func(value *batch.Batch[T]) bool {
+						if !ops.TryPop(value) {
+							return false
+						}
+						metric.consumer.dequeued.Add(1)
+						metric.consumer.elements.Add(uint64(value.Len()))
+						metric.sample(ops.Len())
+						return true
+					}}
+				},
+			})
+		}
 		bindings.drains = append(bindings.drains, func() {
 			var value batch.Batch[T]
 			for ops.TryPop(&value) {
+				if bindings.discarding {
+					metric.discard(value.Len())
+				}
 				value.Release()
 			}
 		})

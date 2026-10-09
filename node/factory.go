@@ -1,6 +1,6 @@
 package node
 
-// StateFactory creates one explicit state value for a future logical replica.
+// StateFactory creates one explicit state value for one physical node instance.
 // A nil error transfers lifecycle ownership of the returned state to that
 // future runtime; an error transfers no ownership.
 type StateFactory[S any] func() (S, error)
@@ -24,7 +24,7 @@ type Stateful[S, H any] struct {
 	Close    CloseFunc[S]
 }
 
-// ClosureReplica is one future replica's closure-bound handler set and optional
+// ClosureReplica is one physical node instance's closure-bound handler set and optional
 // lifecycle callbacks. A successful ClosureFactory result transfers exactly one
 // lifecycle to the future runtime.
 type ClosureReplica[H any] struct {
@@ -33,7 +33,7 @@ type ClosureReplica[H any] struct {
 	Close    func() error
 }
 
-// ClosureFactory creates a fresh closure-bound replica. A nil error transfers
+// ClosureFactory creates a fresh closure-bound physical instance. A nil error transfers
 // lifecycle ownership; a non-nil error transfers none. A future runtime must
 // call a provided Close exactly once after every successful result, including
 // rollback after a partial Init failure.

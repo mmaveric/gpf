@@ -257,6 +257,10 @@ const nodesTemplate = `package node
 {{range .}}
 // Node{{.Count}} is an explicit-state handler set with {{.Count}} typed inputs.
 type Node{{.Count}}{{.ExplicitTypeParams}} struct {
+	// BindCounter installs registered numeric update functions into fresh state.
+	BindCounter CounterBinder[S]
+	// MapError optionally converts failures for an installed asynchronous logger.
+	MapError ErrorMapper[E]
 	{{if eq .Count 0}}Handle SourceHandler[S, O, E]
 	{{else}}{{range .Inputs}}Handle{{.}} InputHandler[S, I{{.}}, O, E]
 	{{end}}{{end}}{{if .HasSelector}}Select Selector[S]
@@ -270,6 +274,10 @@ import "github.com/asharipov/gpf/batch"
 {{range .}}
 // ClosureNode{{.Count}} is a closure handler set with {{.Count}} typed inputs.
 type ClosureNode{{.Count}}{{.ClosureTypeParams}} struct {
+	// BindCounter installs registered numeric update functions into fresh closures.
+	BindCounter ClosureCounterBinder
+	// MapError optionally converts failures for an installed asynchronous logger.
+	MapError ErrorMapper[E]
 	{{if eq .Count 0}}Handle func(outputs *O) Result[E]
 	{{else}}{{range .Inputs}}Handle{{.}} func(input batch.Batch[I{{.}}], outputs *O) Result[E]
 	{{end}}{{end}}{{if .HasSelector}}Select ClosureSelector
@@ -372,11 +380,17 @@ func normalizeExplicit{{.Count}}[S{{range .Inputs}}, I{{.}}{{end}}, E any, O nod
 	if definition.Init != nil {
 		target.lifecycle.init = func() error { return definition.Init(&state) }
 	}
+	bindCounters(target, nodeID, &state, definition.Handlers.BindCounter)
 	var outputs O
 	finalizers := bindOutputs(target, nodeID, &outputs)
+	metrics := target.nodeMetrics(nodeID)
+	errorConnected := target.errorConnected(nodeID)
+	mapError := bindErrorMapper(target, nodeID, definition.Handlers.MapError)
 	var errorOutput node.Output[E]
 	finalizeError := target.bindError(nodeID, unsafe.Pointer(&errorOutput))
 	publishError := func(result node.Result[E]) bool {
+		if mapError != nil { mapError(result.Value) }
+		if !errorConnected { metrics.unconnected.Add(1); return true }
 		value, ok := errorOutput.Acquire()
 		if !ok {
 			return true
@@ -396,6 +410,7 @@ func normalizeExplicit{{.Count}}[S{{range .Inputs}}, I{{.}}{{end}}, E any, O nod
 		init: target.lifecycle.init,
 		close: target.lifecycle.close,
 		run: func() bool {
+			hadPending := pending
 			if pending {
 				if pendingError {
 					if !finalizeError(false) {
@@ -407,7 +422,11 @@ func normalizeExplicit{{.Count}}[S{{range .Inputs}}, I{{.}}{{end}}, E any, O nod
 				}
 				pending = false
 			}
+			if target.sourceAllowed != nil && !target.sourceAllowed() { return hadPending }
+			started, measured := metrics.beginTiming()
 			result := definition.Handlers.Handle(&state, &outputs)
+			metrics.endTiming(started, measured)
+			metrics.result(result.Failed)
 			if result.Failed {
 				target.finalize(finalizers, true)
 				pending = !publishError(result)
@@ -423,6 +442,7 @@ func normalizeExplicit{{.Count}}[S{{range .Inputs}}, I{{.}}{{end}}, E any, O nod
 	})
 	{{else}}{{range .Inputs}}input{{.}} := runtimeInputFor[I{{.}}](target, endpointID{nodeID: nodeID, portID: {{.}}})
 	var batch{{.}} batch.Batch[I{{.}}]
+	var inputScope{{.}} batch.InputScope[I{{.}}]
 	{{end}}pending := false
 	pendingError := false
 	target.runners = append(target.runners, runner{
@@ -448,6 +468,9 @@ func normalizeExplicit{{.Count}}[S{{range .Inputs}}, I{{.}}{{end}}, E any, O nod
 				return false
 			}
 			selected := node.Port1
+			for ready&(1<<selected) == 0 {
+				selected++
+			}
 			{{if .HasSelector}}if ready&(ready-1) != 0 {
 				selected = definition.Handlers.Select(&state, ready)
 				if selected >= {{.Count}} || ready&(1<<selected) == 0 {
@@ -460,7 +483,13 @@ func normalizeExplicit{{.Count}}[S{{range .Inputs}}, I{{.}}{{end}}, E any, O nod
 				if !input{{.}}.pop(&batch{{.}}) {
 					return false
 				}
+				metrics.input(batch{{.}}.Len())
+				// Scope copies made by the handler communicate Move/Release to cleanup.
+				inputScope{{.}}.Begin(&batch{{.}})
+				started, measured := metrics.beginTiming()
 				result := definition.Handlers.Handle{{.}}(&state, batch{{.}}, &outputs)
+				metrics.endTiming(started, measured)
+				metrics.result(result.Failed)
 				if result.Failed {
 					target.finalize(finalizers, true)
 					pending = !publishError(result)
@@ -469,7 +498,7 @@ func normalizeExplicit{{.Count}}[S{{range .Inputs}}, I{{.}}{{end}}, E any, O nod
 					pending = !target.finalize(finalizers, false)
 					pendingError = false
 				}
-				batch{{.}}.Release()
+				inputScope{{.}}.End(&batch{{.}})
 			{{end}}
 			}
 			return true
@@ -537,11 +566,17 @@ func normalizeClosure{{.Count}}[{{range .Inputs}}I{{.}}, {{end}}E any, O node.Ou
 	{{end}}{{end}}if replica.Init != nil {
 		target.lifecycle.init = replica.Init
 	}
+	bindClosureCounters(target, nodeID, replica.Handlers.BindCounter)
 	var outputs O
 	finalizers := bindOutputs(target, nodeID, &outputs)
+	metrics := target.nodeMetrics(nodeID)
+	errorConnected := target.errorConnected(nodeID)
+	mapError := bindErrorMapper(target, nodeID, replica.Handlers.MapError)
 	var errorOutput node.Output[E]
 	finalizeError := target.bindError(nodeID, unsafe.Pointer(&errorOutput))
 	publishError := func(result node.Result[E]) bool {
+		if mapError != nil { mapError(result.Value) }
+		if !errorConnected { metrics.unconnected.Add(1); return true }
 		value, ok := errorOutput.Acquire()
 		if !ok {
 			return true
@@ -561,6 +596,7 @@ func normalizeClosure{{.Count}}[{{range .Inputs}}I{{.}}, {{end}}E any, O node.Ou
 		init: target.lifecycle.init,
 		close: target.lifecycle.close,
 		run: func() bool {
+			hadPending := pending
 			if pending {
 				if pendingError {
 					if !finalizeError(false) {
@@ -572,7 +608,11 @@ func normalizeClosure{{.Count}}[{{range .Inputs}}I{{.}}, {{end}}E any, O node.Ou
 				}
 				pending = false
 			}
+			if target.sourceAllowed != nil && !target.sourceAllowed() { return hadPending }
+			started, measured := metrics.beginTiming()
 			result := replica.Handlers.Handle(&outputs)
+			metrics.endTiming(started, measured)
+			metrics.result(result.Failed)
 			if result.Failed {
 				target.finalize(finalizers, true)
 				pending = !publishError(result)
@@ -588,6 +628,7 @@ func normalizeClosure{{.Count}}[{{range .Inputs}}I{{.}}, {{end}}E any, O node.Ou
 	})
 	{{else}}{{range .Inputs}}input{{.}} := runtimeInputFor[I{{.}}](target, endpointID{nodeID: nodeID, portID: {{.}}})
 	var batch{{.}} batch.Batch[I{{.}}]
+	var inputScope{{.}} batch.InputScope[I{{.}}]
 	{{end}}pending := false
 	pendingError := false
 	target.runners = append(target.runners, runner{
@@ -613,6 +654,9 @@ func normalizeClosure{{.Count}}[{{range .Inputs}}I{{.}}, {{end}}E any, O node.Ou
 				return false
 			}
 			selected := node.Port1
+			for ready&(1<<selected) == 0 {
+				selected++
+			}
 			{{if .HasSelector}}if ready&(ready-1) != 0 {
 				selected = replica.Handlers.Select(ready)
 				if selected >= {{.Count}} || ready&(1<<selected) == 0 {
@@ -625,7 +669,13 @@ func normalizeClosure{{.Count}}[{{range .Inputs}}I{{.}}, {{end}}E any, O node.Ou
 				if !input{{.}}.pop(&batch{{.}}) {
 					return false
 				}
+				metrics.input(batch{{.}}.Len())
+				// Scope copies made by the handler communicate Move/Release to cleanup.
+				inputScope{{.}}.Begin(&batch{{.}})
+				started, measured := metrics.beginTiming()
 				result := replica.Handlers.Handle{{.}}(batch{{.}}, &outputs)
+				metrics.endTiming(started, measured)
+				metrics.result(result.Failed)
 				if result.Failed {
 					target.finalize(finalizers, true)
 					pending = !publishError(result)
@@ -634,7 +684,7 @@ func normalizeClosure{{.Count}}[{{range .Inputs}}I{{.}}, {{end}}E any, O node.Ou
 					pending = !target.finalize(finalizers, false)
 					pendingError = false
 				}
-				batch{{.}}.Release()
+				inputScope{{.}}.End(&batch{{.}})
 			{{end}}
 			}
 			return true

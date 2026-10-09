@@ -7,6 +7,7 @@ import (
 
 	"github.com/asharipov/gpf/batch"
 	"github.com/asharipov/gpf/internal/benchtest"
+	"github.com/asharipov/gpf/node"
 )
 
 func TestBatchZeroValue(t *testing.T) {
@@ -170,6 +171,279 @@ func TestBatchReleaseUsesOriginPoolAfterMove(t *testing.T) {
 	}
 	var empty batch.Batch[int]
 	empty.Release()
+}
+
+func TestInputScopeTracksMoveAndReusesInvocation(t *testing.T) {
+	pool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope batch.InputScope[int]
+
+	runnerInput, ok := pool.Acquire()
+	if !ok {
+		t.Fatal("Acquire() = unavailable")
+	}
+	runnerInput.Mutable()[0] = 41
+	runnerInput.SetLen(1)
+	handlerInput := scope.Begin(&runnerInput)
+	moved := handlerInput.Move()
+	scope.End(&runnerInput)
+	if runnerInput.Cap() != 0 || moved.Len() != 1 || moved.Items()[0] != 41 {
+		t.Fatalf("after move/end: runner=%d/%d moved=%v", runnerInput.Len(), runnerInput.Cap(), moved.Items())
+	}
+	if _, ok := pool.Acquire(); ok {
+		t.Fatal("moved slot was available before moved handle release")
+	}
+	moved.Release()
+
+	runnerInput, ok = pool.Acquire()
+	if !ok {
+		t.Fatal("Acquire() after moved release = unavailable")
+	}
+	runnerInput.SetLen(2)
+	handlerInput = scope.Begin(&runnerInput)
+	if handlerInput.Len() != 2 {
+		t.Fatalf("reused scope input length = %d, want 2", handlerInput.Len())
+	}
+	scope.End(&runnerInput)
+	if runnerInput.Cap() != 0 {
+		t.Fatal("End() did not clear untouched runner input")
+	}
+	if _, ok := pool.Acquire(); !ok {
+		t.Fatal("End() did not return untouched input")
+	}
+}
+
+func TestInputScopeTracksExplicitRelease(t *testing.T) {
+	for _, release := range []struct {
+		name string
+		run  func(*batch.Pool[int], *batch.Batch[int])
+	}{
+		{name: "batch release", run: func(_ *batch.Pool[int], input *batch.Batch[int]) { input.Release() }},
+		{name: "pool release", run: func(pool *batch.Pool[int], input *batch.Batch[int]) { pool.Release(input) }},
+	} {
+		t.Run(release.name, func(t *testing.T) {
+			pool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var scope batch.InputScope[int]
+			runnerInput, ok := pool.Acquire()
+			if !ok {
+				t.Fatal("Acquire() = unavailable")
+			}
+			handlerInput := scope.Begin(&runnerInput)
+			release.run(pool, &handlerInput)
+			scope.End(&runnerInput)
+			if runnerInput.Cap() != 0 || handlerInput.Cap() != 0 {
+				t.Fatal("End or explicit release retained a handle")
+			}
+			if _, ok := pool.Acquire(); !ok {
+				t.Fatal("explicit release did not return the slot")
+			}
+		})
+	}
+}
+
+func TestInputScopeRejectedCommitAndFailedFinalization(t *testing.T) {
+	t.Run("rejected duplicate commit retains input cleanup", func(t *testing.T) {
+		inputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		outputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output node.Output[int]
+		node.InstallOutput(&output, outputPool.Acquire)
+		first, ok := output.Acquire()
+		if !ok {
+			t.Fatal("output Acquire() = unavailable")
+		}
+		first.SetLen(1)
+		if !output.Commit(&first) {
+			t.Fatal("first Commit() = false")
+		}
+		runnerInput, ok := inputPool.Acquire()
+		if !ok {
+			t.Fatal("input Acquire() = unavailable")
+		}
+		runnerInput.Mutable()[0] = 17
+		runnerInput.SetLen(1)
+		var scope batch.InputScope[int]
+		handlerInput := scope.Begin(&runnerInput)
+		if output.Commit(&handlerInput) {
+			t.Fatal("duplicate Commit() = true")
+		}
+		scope.End(&runnerInput)
+		if !node.FinalizeOutput(&output, true, func(batch.Batch[int]) bool { return true }) {
+			t.Fatal("failed output finalization")
+		}
+		if _, ok := inputPool.Acquire(); !ok {
+			t.Fatal("rejected input was not released")
+		}
+		if _, ok := outputPool.Acquire(); !ok {
+			t.Fatal("failed staged output was not released")
+		}
+	})
+	t.Run("failed finalization releases moved input once", func(t *testing.T) {
+		inputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		outputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output node.Output[int]
+		node.InstallOutput(&output, outputPool.Acquire)
+		runnerInput, ok := inputPool.Acquire()
+		if !ok {
+			t.Fatal("input Acquire() = unavailable")
+		}
+		runnerInput.Mutable()[0] = 23
+		runnerInput.SetLen(1)
+		var scope batch.InputScope[int]
+		handlerInput := scope.Begin(&runnerInput)
+		if !output.Commit(&handlerInput) {
+			t.Fatal("input Commit() = false")
+		}
+		if !node.FinalizeOutput(&output, true, func(batch.Batch[int]) bool { return true }) {
+			t.Fatal("failed output finalization")
+		}
+		scope.End(&runnerInput)
+		if _, ok := inputPool.Acquire(); !ok {
+			t.Fatal("input slot was not returned")
+		}
+		if _, ok := outputPool.Acquire(); !ok {
+			t.Fatal("output slot was not returned")
+		}
+	})
+}
+
+func TestInputScopeRetainsWaitPendingAndCloseDiscardOwnership(t *testing.T) {
+	t.Run("drop", func(t *testing.T) {
+		inputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		outputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output node.Output[int]
+		node.InstallOutput(&output, outputPool.Acquire)
+		runnerInput, ok := inputPool.Acquire()
+		if !ok {
+			t.Fatal("input Acquire() = unavailable")
+		}
+		runnerInput.SetLen(1)
+		var scope batch.InputScope[int]
+		handlerInput := scope.Begin(&runnerInput)
+		if !output.Commit(&handlerInput) {
+			t.Fatal("input Commit() = false")
+		}
+		if !node.FinalizeOutput(&output, false, func(value batch.Batch[int]) bool { value.Release(); return true }) {
+			t.Fatal("Drop cleanup did not complete")
+		}
+		scope.End(&runnerInput)
+		if _, ok := inputPool.Acquire(); !ok {
+			t.Fatal("Drop did not return input slot")
+		}
+		if _, ok := outputPool.Acquire(); !ok {
+			t.Fatal("Drop leaked an output acquisition")
+		}
+	})
+	t.Run("wait retry", func(t *testing.T) {
+		inputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		outputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output node.Output[int]
+		node.InstallOutput(&output, outputPool.Acquire)
+		runnerInput, ok := inputPool.Acquire()
+		if !ok {
+			t.Fatal("input Acquire() = unavailable")
+		}
+		runnerInput.Mutable()[0] = 31
+		runnerInput.SetLen(1)
+		var scope batch.InputScope[int]
+		handlerInput := scope.Begin(&runnerInput)
+		if !output.Commit(&handlerInput) {
+			t.Fatal("input Commit() = false")
+		}
+		if node.FinalizeOutput(&output, false, func(batch.Batch[int]) bool { return false }) {
+			t.Fatal("full Wait publication unexpectedly completed")
+		}
+		scope.End(&runnerInput)
+		if _, ok := inputPool.Acquire(); ok {
+			t.Fatal("Wait-pending input slot became available")
+		}
+		if !node.FinalizeOutput(&output, false, func(value batch.Batch[int]) bool { value.Release(); return true }) {
+			t.Fatal("successful Wait retry did not complete")
+		}
+		if _, ok := inputPool.Acquire(); !ok {
+			t.Fatal("Wait retry did not return input to origin pool")
+		}
+	})
+	t.Run("forced close", func(t *testing.T) {
+		inputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		outputPool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output node.Output[int]
+		node.InstallOutput(&output, outputPool.Acquire)
+		runnerInput, ok := inputPool.Acquire()
+		if !ok {
+			t.Fatal("input Acquire() = unavailable")
+		}
+		runnerInput.SetLen(1)
+		var scope batch.InputScope[int]
+		handlerInput := scope.Begin(&runnerInput)
+		if !output.Commit(&handlerInput) {
+			t.Fatal("input Commit() = false")
+		}
+		if !node.FinalizeOutput(&output, true, func(batch.Batch[int]) bool { return true }) {
+			t.Fatal("forced-close output cleanup")
+		}
+		scope.End(&runnerInput)
+		if _, ok := inputPool.Acquire(); !ok {
+			t.Fatal("close did not return input slot")
+		}
+		if _, ok := outputPool.Acquire(); !ok {
+			t.Fatal("close leaked an output acquisition")
+		}
+	})
+}
+
+func TestInputScopeLifecycleAllocs(t *testing.T) {
+	pool, err := batch.NewPool[int](batch.PoolConfig{Capacity: 1, BatchCapacity: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope batch.InputScope[int]
+	benchtest.AssertZeroAllocs(t, 1_000, func() {
+		runnerInput, ok := pool.Acquire()
+		if !ok {
+			t.Fatal("Acquire() = unavailable")
+		}
+		runnerInput.Mutable()[0] = 47
+		runnerInput.SetLen(1)
+		handlerInput := scope.Begin(&runnerInput)
+		moved := handlerInput.Move()
+		moved.Release()
+		scope.End(&runnerInput)
+	})
 }
 
 func TestPoolReleaseClearing(t *testing.T) {

@@ -1,6 +1,9 @@
 package queue
 
-import "github.com/asharipov/gpf/batch"
+import (
+	"github.com/asharipov/gpf/batch"
+	"github.com/asharipov/gpf/numa"
+)
 
 // Policy controls how a future edge handles a full queue.
 type Policy uint8
@@ -28,9 +31,14 @@ type QueueOps[T any] struct {
 // runtime invocation must return operations independent from other runtimes.
 type Factory[T any] func(Config) (QueueOps[T], error)
 
-// Config defines a bounded future queue.
+// Config defines a bounded future queue. NUMA is inactive placement metadata.
 type Config struct {
 	Capacity      uint32
 	BatchCapacity uint32
 	Policy        Policy
+	NUMA          numa.Placement
 }
+
+// Allocator is a typed dormant queue-slot allocation descriptor. Current
+// constructors keep using portable Go storage.
+type Allocator[T any] func(capacity uint32) ([]batch.Batch[T], error)

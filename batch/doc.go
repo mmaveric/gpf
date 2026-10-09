@@ -8,4 +8,6 @@
 // rule for local and remote transport, queue drains, and pending Wait cleanup.
 // Mutable returns full fixed-capacity storage for indexed writes, while Items
 // exposes only the explicit logical length. External ingress remains deferred.
+// PoolConfig.NUMA and PoolOptions.Allocator are inactive metadata; NewPool
+// continues to use portable Go allocation without host topology discovery.
 package batch

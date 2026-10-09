@@ -206,6 +206,20 @@ func (b *Builder) Validate() (*ValidationReport, error) {
 	report.reverse = reverse
 
 	issues := make([]ValidationIssue, 0)
+	fanInCounts := make(map[endpointID]int)
+	broadcastOutputCounts := make(map[endpointID]int)
+	shardOutputCounts := make(map[endpointID]int)
+	for _, edge := range b.edges {
+		if edge.fanInMerge != 0 {
+			fanInCounts[edge.target]++
+		}
+		if edge.broadcastGroup != 0 {
+			broadcastOutputCounts[edge.source]++
+		}
+		if edge.shardGroup != 0 {
+			shardOutputCounts[edge.source]++
+		}
+	}
 	for nodeID, group := range b.placements {
 		if group == InvalidGroupID || nodeID == InvalidNodeID || int(nodeID) > len(b.nodes) || b.nodes[nodeID-1].nodeID != nodeID {
 			issues = append(issues, ValidationIssue{Code: ValidationCodeInvalidGroupPlacement, NodeID: nodeID})
@@ -215,12 +229,22 @@ func (b *Builder) Validate() (*ValidationReport, error) {
 		metadata := metadata[nodeID]
 		issues = append(issues, staticValidationIssues(nodeID, metadata.validation, metadata.inputCount)...)
 		for portID := PortID(1); portID <= PortID(metadata.inputCount); portID++ {
-			if inputEdges[endpointID{nodeID: nodeID, portID: portID}] != 1 {
+			ep := endpointID{nodeID: nodeID, portID: portID}
+			expected := 1
+			if fanInCounts[ep] > 0 {
+				expected = fanInCounts[ep]
+			}
+			if inputEdges[ep] != expected {
 				issues = append(issues, ValidationIssue{Code: ValidationCodeUnconnectedInput, NodeID: nodeID, PortID: portID})
 			}
 		}
 		for portID := PortID(1); portID <= PortID(metadata.outputCount); portID++ {
-			if outputEdges[endpointID{nodeID: nodeID, portID: portID}] != 1 {
+			ep := endpointID{nodeID: nodeID, portID: portID}
+			expected := 1
+			if broadcastOutputCounts[ep]+shardOutputCounts[ep] > 0 {
+				expected = broadcastOutputCounts[ep] + shardOutputCounts[ep]
+			}
+			if outputEdges[ep] != expected {
 				issues = append(issues, ValidationIssue{Code: ValidationCodeUnconnectedOutput, NodeID: nodeID, PortID: portID})
 			}
 		}

@@ -2,7 +2,9 @@
 //
 // Registration and typed connections mutate an open Builder without
 // invoking callbacks or queue factories. Connect validates port provenance,
-// one producer per input, and one consumer per output; fan-out is unsupported.
+// one producer per input, and one consumer per output. ConnectBroadcast makes
+// shallow copies into branch-owned slots; ConnectShard routes each element to
+// one branch with bounded staging. Both require fixed, non-expanded endpoints.
 // It returns dense one-based EdgeID values and deterministically reports local
 // errors. ConnectError explicitly routes one ErrorPort to one matching ordinary
 // input. Error outputs are optional; queue configuration validation is pure and factories construct fresh
@@ -44,13 +46,21 @@
 // Start materializes one locked OS-thread worker per fixed CPU-bound group with
 // fresh pools, queues, and node state. Linux workers attempt CPU affinity with a
 // pure-Go syscall; unsupported or rejected affinity retains the locked-thread
-// fallback. AffinityStatus returns the immutable ordered result for each group.
+// fallback. AffinityStatus returns the immutable physical-worker ordered result
+// for each logical group and zero-based replica.
 // Drain pauses all workers at runner boundaries, disables sources, and processes
 // accepted work to a stable global snapshot; Close discards queued and pending
 // batches from that barrier. Both dispatch owned lifecycle callbacks to their
 // locked owner workers in reverse canonical construction order. Automatic
-// grouping, CPU discovery or CPU-set policy, NUMA placement, replicas, richer
+// grouping, CPU discovery or CPU-set policy, NUMA placement, node pools, richer
 // queue models, ingress, metrics, logging, error mapping, retries, panic recovery,
 // error fan-out/distribution, and concurrent starts
-// are unavailable.
+// are unavailable as automatic execution features. PlanningConstraints and
+// MinimizeRemoteEdges are pure copied control-plane previews. The minimizer is
+// deterministic and checks local legality/quotient acyclicity; it does not
+// claim global optimality and never changes Build/Start placement.
+// Builder.PlanGroups composes constraint normalization and minimization into
+// an opt-in CPU-completeness preview; it does not seal or execute the builder.
+// NUMA annotations and typed allocator descriptors are copied inactive metadata;
+// no host topology discovery or NUMA-specific allocation is performed.
 package graph
