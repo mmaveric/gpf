@@ -11,6 +11,7 @@ func TestRunPreservesMillionDeterministicOrdersAcrossRepeatedRuns(t *testing.T) 
 	wants := []string{
 		"orders submitted=1000000 processed=1000000 rejected=0 audited=1000000 units=5500000 gross_cents=2761000000 partitions=333330,333340,333330",
 		"queue_drop_elements=0 pool_drop_elements=0 logged_errors=0",
+		"pools_in_use=0",
 	}
 	for run := range 10 {
 		var output bytes.Buffer
