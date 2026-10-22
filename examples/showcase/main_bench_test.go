@@ -11,6 +11,7 @@ func BenchmarkFullShowcase(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		// Loading is timed because the primary workflow includes reading and decoding the input file.
 		orders, err := loadOrders()
 		if err != nil {
 			b.Fatal(err)

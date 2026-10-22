@@ -6,15 +6,7 @@ import (
 )
 
 func BenchmarkRun(b *testing.B) {
-	input := make([]Order, 1_000_000)
-	for i := range input {
-		input[i] = Order{
-			ID:         uint64(i + 1),
-			CustomerID: uint64(i%100_000 + 1),
-			Units:      uint32(i%10 + 1),
-			UnitCents:  uint32(i%1_000 + 1),
-		}
-	}
+	input := millionValidOrders()
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -23,4 +15,17 @@ func BenchmarkRun(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+func millionValidOrders() []Order {
+	orders := make([]Order, 1_000_000)
+	for i := range orders {
+		orders[i] = Order{
+			ID:         uint64(i + 1),
+			CustomerID: uint64(i%100_000 + 1),
+			Units:      uint32(i%10 + 1),
+			UnitCents:  uint32(i%1_000 + 1),
+		}
+	}
+	return orders
 }
