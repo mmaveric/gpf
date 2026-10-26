@@ -146,10 +146,10 @@ func TestDefinitionOwnsCopiedTopologyAndInspectionResults(t *testing.T) {
 	}
 
 	typeOfDefinition := reflect.TypeOf(&Definition{})
-	if typeOfDefinition.NumMethod() != 7 {
-		t.Fatalf("Definition exports %d methods, want exactly 7", typeOfDefinition.NumMethod())
+	if typeOfDefinition.NumMethod() != 8 {
+		t.Fatalf("Definition exports %d methods, want exactly 8", typeOfDefinition.NumMethod())
 	}
-	for _, name := range []string{"NodeCount", "EdgeCount", "TopologicalOrder", "EdgeQueuePlans", "Constraints", "GroupNUMA", "Start"} {
+	for _, name := range []string{"NodeCount", "EdgeCount", "TopologicalOrder", "EdgeQueuePlans", "Constraints", "GroupNUMA", "Start", "WriteDOT"} {
 		if _, ok := typeOfDefinition.MethodByName(name); !ok {
 			t.Fatalf("Definition is missing %s", name)
 		}

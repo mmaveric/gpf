@@ -2,6 +2,7 @@ package graph_test
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/asharipov/gpf/batch"
 	"github.com/asharipov/gpf/graph"
@@ -41,4 +42,52 @@ func ExampleBuilder_Build() {
 	fmt.Println(err, definition.NodeCount(), definition.EdgeCount(), definition.TopologicalOrder())
 	// Output:
 	// <nil> 2 1 [1 2]
+}
+
+func ExampleDefinition_WriteDOT() {
+	builder := graph.NewBuilder()
+	source, err := graph.AddNode0(builder, node.Stateful[struct{}, node.Node0[struct{}, node.Outputs1[int], error]]{
+		Factory: func() (struct{}, error) { return struct{}{}, nil },
+		Handlers: node.Node0[struct{}, node.Outputs1[int], error]{
+			Handle: func(*struct{}, *node.Outputs1[int]) node.Result[error] { return node.Result[error]{} },
+		},
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	sink, err := graph.AddNode1(builder, node.Stateful[struct{}, node.Node1[struct{}, int, node.Outputs0, error]]{
+		Factory: func() (struct{}, error) { return struct{}{}, nil },
+		Handlers: node.Node1[struct{}, int, node.Outputs0, error]{
+			Handle1: func(*struct{}, batch.Batch[int], *node.Outputs0) node.Result[error] { return node.Result[error]{} },
+		},
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	if _, err := graph.Connect(builder, graph.OutputPorts1(source.Outputs()).Out1, sink.Inputs().In1, graph.EdgeConfig[int]{Capacity: 1, BatchCapacity: 1, Policy: queue.Drop}); err != nil {
+		fmt.Println(err)
+		return
+	}
+	if err := graph.BindCPU(builder, graph.DefaultGroupID, 0); err != nil {
+		fmt.Println(err)
+		return
+	}
+	definition, err := builder.Build()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	if err := definition.WriteDOT(os.Stdout); err != nil {
+		fmt.Println(err)
+	}
+	// Output:
+	// digraph G {
+	//   rankdir=LR;
+	//   node [shape=box, style=rounded, fontname=Helvetica];
+	//   n1 [label="stateful #1"];
+	//   n2 [label="stateful #2"];
+	//   n1 -> n2 [label="data: out1 → in1"];
+	// }
 }
