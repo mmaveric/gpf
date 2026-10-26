@@ -1,0 +1,19 @@
+package main
+
+import (
+	"io"
+	"testing"
+)
+
+func BenchmarkFullStandaloneProfile(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		orders, err := loadOrders()
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := run(io.Discard, orders); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

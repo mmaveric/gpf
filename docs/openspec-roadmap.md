@@ -1,35 +1,31 @@
 # OpenSpec implementation roadmap
 
-Source: [Go pipeline framework plan](go-pipeline-framework-plan.md), section 12, stages 0–8. Snapshot: 2026-09-30.
+Source: [Go pipeline framework plan](go-pipeline-framework-plan.md), section 12, stages 0–8. Status snapshot: 2026-10-10.
 
 Scope selected by the user: one separate change for each unfinished implementation point; reuse existing changes and map completed points to archives. Section 13 testing is included in each feature's tasks, not duplicated into a second set of testing changes.
 
-There are **23 new changes** and **2 existing active changes**. Every new change has proposal, design, and tasks; behavioral changes also have delta specs. `verify-replica-state-isolation` and `plan-numa-placement` are verification/documentation-only and explicitly skip specs.
+The original plan produced 23 new changes and 2 existing active changes. All implementation and verification changes have since been archived; there are no active OpenSpec changes. `verify-replica-state-isolation` and `plan-numa-placement` are verification/documentation-only and explicitly skip specs.
 
-Planning-complete means the artifacts are ready, not that prerequisite implementations are complete. Dependencies below are execution gates recorded in each proposal and first task; OpenSpec does not automatically enforce these cross-change dependencies. Apply a named change only after its prerequisites are satisfied.
+The dependency map below records the original implementation order. It is retained as historical planning context; it is no longer an execution queue.
 
-## Immediate next step
+## Current status
 
-```text
-/opsx-apply fix-moved-input-ownership
-```
-
-Then resume `/opsx-apply add-runtime-metrics`. Metrics is partially implemented (1/19 tasks checked at this snapshot) and blocked by the forwarded-input ownership regression. Preserve that worktree while applying the prerequisite fix.
+Stages 0–7 are implemented and archived. Stage 8 produced two distinct outcomes: platform-specific fast paths received a documented no-go decision, while NUMA support remains inactive metadata and a placement design, not runtime NUMA allocation. Panic recovery remains intentionally outside the runtime contract. See the linked archive entries and `docs/numa-placement-design.md` for details.
 
 ## Every implementation point
 
-Completed archive links describe delivered baseline capabilities; where a later regression/gap exists, the active corrective change is also linked.
+Archive links describe the delivered capabilities and decisions. The table reflects the current status, including work completed after the original roadmap snapshot.
 
 | Stage | Original implementation point | Coverage / owner |
 |---|---|---|
 | 0 | Ownership, move, drop, wait, error semantics | [Contracts archive][contracts], [ownership fix][ownership], [typed errors archive][errors] |
 | 0 | Public generic signatures | [Contracts archive][contracts], [arity archive][arities] |
-| 0 | Node/pool/local/remote/end-to-end harness | Baseline [contracts archive][contracts]; remaining skipped cases: [complete-benchmark-matrix][matrix] |
+| 0 | Node/pool/local/remote/end-to-end harness | [Complete benchmark matrix][matrix] |
 | 0 | AllocsPerRun gates | [Batch archive][batch], [single-group archive][single], [multi-group archive][multi], [Go 1.26 fix][allocs]; new paths extend gates in their own tasks |
 | 1 | Batch[T] | [Batch archive][batch] |
 | 1 | Preallocated Pool[T] | [Batch archive][batch] |
 | 1 | Per-pool clearing policy | [Batch archive][batch] |
-| 1 | Move and automatic release | Baseline [batch archive][batch]; outstanding correction: [fix-moved-input-ownership][ownership] |
+| 1 | Move and automatic release | [Ownership correction][ownership] |
 | 1 | Producer Acquire/Commit and copying Submit | [add-typed-ingress][ingress] |
 | 2 | Typed port handles | [Builder archive][builder] |
 | 2 | Arity generator 0–8 | [Arity archive][arities] |
@@ -41,19 +37,19 @@ Completed archive links describe delivered baseline capabilities; where a later 
 | 3 | Interface-free runnable | [Single-group archive][single] |
 | 3 | Ready mask and input selector | [Single-group archive][single] |
 | 3 | Sink handler | [Single-group archive][single] |
-| 3 | Processing/drop metrics | Existing [add-runtime-metrics][metrics] |
+| 3 | Processing/drop metrics | [Runtime metrics][metrics] |
 | 4 | QueueOps[T] | [Contracts archive][contracts], [multi-group archive][multi] |
-| 4 | Bounded pure-Go rings | SPSC baseline [multi-group archive][multi]; remaining models: [add-bounded-concurrent-queues][queues] |
+| 4 | Bounded pure-Go rings | SPSC baseline [multi-group archive][multi] and [concurrent queue models][queues] |
 | 4 | Automatic SPSC/MPSC/SPMC/MPMC selection | [add-automatic-queue-selection][selection] |
 | 4 | Busy-spin Wait and Drop | [Single-group archive][single], [multi-group archive][multi], [typed errors archive][errors] |
 | 4 | Execution groups | [Multi-group archive][multi] |
 | 4 | Explicit CPUs, thread locking, affinity | [CPU affinity archive][affinity] |
-| 4 | Graceful drain with timeout | Drain baseline [multi-group archive][multi]; remaining deadline: [add-drain-timeout][drain] |
+| 4 | Graceful drain with timeout | [Drain deadline support][drain] |
 | 5 | Result[E] | [Contracts archive][contracts] |
 | 5 | Separate typed error port | [Typed errors archive][errors] |
 | 5 | ErrorMapper[E] | [add-error-mapping][mapping] |
 | 5 | Bounded async logger | [add-async-error-logger][logging] |
-| 5 | Full metrics set | Existing [base metrics][metrics], remaining [extended metrics][extended]; timing/log fields are owned by their changes |
+| 5 | Full metrics set | [Base metrics][metrics], [extended metrics][extended], and [processing timing][timing] |
 | 5 | Full and sampled timing | [add-processing-timing][timing] |
 | 5 | Custom timestamp function | [add-custom-timestamp-source][clock] |
 | 6 | Group replicas | [add-group-replicas][replicas] |
@@ -119,11 +115,11 @@ ownership fix ──┬── base metrics ──┬── ingress / deadline dr
                                                           ── NUMA metadata ── future NUMA design
 ```
 
-## Shared contract integration
+## Shared contract integration (historical)
 
-Most new features have additive capability specs to avoid 20+ stale copies of the same broad `Queue and execution semantics contract` requirement. Some current main capabilities explicitly defer these features. During each feature's implementation, its completion task requires reconciling those deferrals and adding full MODIFIED requirement blocks to that change from the then-current main specs. Preserve all previously enabled capabilities; do not replace a shared requirement using an older parallel proposal's snapshot. Add the corresponding Modified Capabilities entries to the proposal when those deltas are captured.
+Most feature changes used additive capability specs to avoid duplicating the broad `Queue and execution semantics contract` requirement. During implementation, their archive tasks reconciled earlier deferrals and synced the changed requirements into the main specs. This section records the integration rule used while the roadmap was active.
 
-This integration step is required before archive, not permission to silently leave contradictory deferrals in main specs. Main specs remain the implemented baseline until each feature is actually delivered and synced.
+The main specs now describe the implemented baseline. Preserve all enabled capabilities when making future spec changes; do not replace a shared requirement from an older proposal snapshot.
 
 ## Design limits carried from the plan
 
@@ -148,28 +144,28 @@ This integration step is required before archive, not permission to silently lea
 [affinity]: ../openspec/changes/archive/2026-08-20-add-cpu-affinity-runtime/
 [allocs]: ../openspec/changes/archive/2026-09-01-fix-go126-allocation-tests/
 [errors]: ../openspec/changes/archive/2026-09-07-implement-typed-error-routing/
-[ownership]: ../openspec/changes/fix-moved-input-ownership/
-[metrics]: ../openspec/changes/add-runtime-metrics/
-[matrix]: ../openspec/changes/complete-benchmark-matrix/
-[ingress]: ../openspec/changes/add-typed-ingress/
-[queues]: ../openspec/changes/add-bounded-concurrent-queues/
-[selection]: ../openspec/changes/add-automatic-queue-selection/
-[drain]: ../openspec/changes/add-drain-timeout/
-[mapping]: ../openspec/changes/add-error-mapping/
-[logging]: ../openspec/changes/add-async-error-logger/
-[extended]: ../openspec/changes/add-extended-runtime-metrics/
-[timing]: ../openspec/changes/add-processing-timing/
-[clock]: ../openspec/changes/add-custom-timestamp-source/
-[replicas]: ../openspec/changes/add-group-replicas/
-[workers]: ../openspec/changes/add-node-worker-pools/
-[isolation]: ../openspec/changes/verify-replica-state-isolation/
-[sharding]: ../openspec/changes/add-element-sharding/
-[broadcast]: ../openspec/changes/add-broadcast-fan-out/
-[fanin]: ../openspec/changes/add-unordered-fan-in/
-[constraints]: ../openspec/changes/add-auto-grouping-constraints/
-[minimize]: ../openspec/changes/add-remote-edge-minimization/
-[planning]: ../openspec/changes/add-automatic-group-planning/
-[autocpu]: ../openspec/changes/add-auto-group-cpu-bindings/
-[fastpaths]: ../openspec/changes/assess-platform-fast-paths/
-[numameta]: ../openspec/changes/add-numa-allocation-metadata/
-[numaplan]: ../openspec/changes/plan-numa-placement/
+[ownership]: ../openspec/changes/archive/2026-10-09-fix-moved-input-ownership/
+[metrics]: ../openspec/changes/archive/2026-10-09-add-runtime-metrics/
+[matrix]: ../openspec/changes/archive/2026-10-09-complete-benchmark-matrix/
+[ingress]: ../openspec/changes/archive/2026-10-09-add-typed-ingress/
+[queues]: ../openspec/changes/archive/2026-10-09-add-bounded-concurrent-queues/
+[selection]: ../openspec/changes/archive/2026-10-09-add-automatic-queue-selection/
+[drain]: ../openspec/changes/archive/2026-10-09-add-drain-timeout/
+[mapping]: ../openspec/changes/archive/2026-10-09-add-error-mapping/
+[logging]: ../openspec/changes/archive/2026-10-09-add-async-error-logger/
+[extended]: ../openspec/changes/archive/2026-10-09-add-extended-runtime-metrics/
+[timing]: ../openspec/changes/archive/2026-10-09-add-processing-timing/
+[clock]: ../openspec/changes/archive/2026-10-09-add-custom-timestamp-source/
+[replicas]: ../openspec/changes/archive/2026-10-09-add-group-replicas/
+[workers]: ../openspec/changes/archive/2026-10-09-add-node-worker-pools/
+[isolation]: ../openspec/changes/archive/2026-10-09-verify-replica-state-isolation/
+[sharding]: ../openspec/changes/archive/2026-10-09-add-element-sharding/
+[broadcast]: ../openspec/changes/archive/2026-10-09-add-broadcast-fan-out/
+[fanin]: ../openspec/changes/archive/2026-10-09-add-unordered-fan-in/
+[constraints]: ../openspec/changes/archive/2026-10-09-add-auto-grouping-constraints/
+[minimize]: ../openspec/changes/archive/2026-10-09-add-remote-edge-minimization/
+[planning]: ../openspec/changes/archive/2026-10-09-add-automatic-group-planning/
+[autocpu]: ../openspec/changes/archive/2026-10-09-add-auto-group-cpu-bindings/
+[fastpaths]: ../openspec/changes/archive/2026-10-09-assess-platform-fast-paths/
+[numameta]: ../openspec/changes/archive/2026-10-09-add-numa-allocation-metadata/
+[numaplan]: ../openspec/changes/archive/2026-10-09-plan-numa-placement/

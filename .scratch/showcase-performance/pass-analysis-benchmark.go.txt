@@ -1,0 +1,94 @@
+package graph
+
+import (
+	"fmt"
+	"sync/atomic"
+	"testing"
+)
+
+// Experimental helpers only; these are not installed in production workers.
+func analysisPassIndexed(w *executorWorker, sources *atomic.Bool) bool {
+	var started uint64
+	var measured bool
+	if w.timingEnabled {
+		started, measured = w.beginPassTiming()
+	}
+	progress := false
+	for i := range w.runners {
+		r := &w.runners[i]
+		if r.source && w.closing != nil && w.closing.Load() {
+			continue
+		}
+		if r.source && !sources.Load() && (r.pending == nil || !r.pending()) {
+			continue
+		}
+		if r.run() {
+			progress = true
+		}
+	}
+	if w.metrics != nil {
+		w.recordPassMetrics(progress, started, measured)
+	}
+	return progress
+}
+
+func analysisPassSourceFree(w *executorWorker, _ *atomic.Bool) bool {
+	var started uint64
+	var measured bool
+	if w.timingEnabled {
+		started, measured = w.beginPassTiming()
+	}
+	progress := false
+	for i := range w.runners {
+		if w.runners[i].run() {
+			progress = true
+		}
+	}
+	if w.metrics != nil {
+		w.recordPassMetrics(progress, started, measured)
+	}
+	return progress
+}
+
+func BenchmarkPassAnalysis(b *testing.B) {
+	for _, count := range []int{1, 3} {
+		for _, source := range []bool{false, true} {
+			if count == 1 && source {
+				continue
+			}
+			for _, work := range []bool{false, true} {
+				for _, variant := range []struct {
+					name string
+					pass func(*executorWorker, *atomic.Bool) bool
+				}{
+					{"baseline", (*executorWorker).pass},
+					{"indexed", analysisPassIndexed},
+					{"source-free", analysisPassSourceFree},
+				} {
+					if source && variant.name == "source-free" {
+						continue
+					}
+					b.Run(fmt.Sprintf("runners=%d/source=%t/work=%t/%s", count, source, work, variant.name), func(b *testing.B) {
+						var sources, closing atomic.Bool
+						sources.Store(true)
+						w := &executorWorker{
+							closing: &closing,
+							metrics: &groupCounters{flushEvery: 2048},
+							passMetrics: workerPassMetrics{flushEvery: 2048},
+							runners: make([]runner, count),
+						}
+						for i := range w.runners {
+							w.runners[i].run = func() bool { return work }
+						}
+						w.runners[0].source = source
+						b.ReportAllocs()
+						b.ResetTimer()
+						for i := 0; i < b.N; i++ {
+							variant.pass(w, &sources)
+						}
+					})
+				}
+			}
+		}
+	}
+}

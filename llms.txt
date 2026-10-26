@@ -1,0 +1,27 @@
+# Go Pipeline Framework
+
+This Go module (`github.com/asharipov/gpf`, Go 1.22+) provides typed batches,
+generated typed nodes, and a graph runtime for batch-oriented pipelines.
+
+## Project documentation
+
+- [README](README.md): project overview, API behavior, runtime contracts,
+  benchmarks, and runnable showcase.
+- [NUMA placement design](docs/numa-placement-design.md): design for a future
+  placement stage; current NUMA and allocator metadata is inactive.
+- [Implementation roadmap](docs/openspec-roadmap.md): implementation status and
+  links to archived changes.
+- [Contributing](CONTRIBUTING.md): local development and verification commands.
+- [Go module](go.mod): module path and minimum Go version.
+
+## Main packages
+
+- `batch`: typed batches and their pools.
+- `node`: generated typed node and output contracts.
+- `graph`: graph construction, validation, planning, and execution.
+- `queue`: bounded concurrent queue implementations.
+- `numa`: placement metadata types.
+- `runtime`: runtime support types.
+
+For API details, see package documentation and source. Run `go test ./...` from
+the repository root to test the module.
