@@ -7,10 +7,9 @@ generated typed nodes, and a graph runtime for batch-oriented pipelines.
 
 - [README](README.md): project overview, API behavior, runtime contracts,
   benchmarks, and runnable showcase.
-- [NUMA placement design](docs/numa-placement-design.md): design for a future
-  placement stage; current NUMA and allocator metadata is inactive.
-- [Implementation roadmap](docs/openspec-roadmap.md): implementation status and
-  links to archived changes.
+- [Specification guide](spec/README.md): reading map and cross-cutting contracts.
+- [Planning and performance spec](spec/05-planning-performance.md): includes
+  inactive NUMA metadata and future placement activation gates.
 - [Contributing](CONTRIBUTING.md): local development and verification commands.
 - [Go module](go.mod): module path and minimum Go version.
 
