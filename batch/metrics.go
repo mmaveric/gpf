@@ -2,14 +2,16 @@ package batch
 
 import "github.com/asharipov/gpf/numa"
 
-// PoolMetrics observes bounded utilization without reading batch contents.
-// Fields are independently sampled; HighWaterSample retains observed peak use.
+// PoolMetrics reports sampled pool utilization without reading batch contents.
+// InUseSample and HighWaterSample are independent observations; the latter is
+// the greatest use observed by the pool so far.
 type PoolMetrics struct {
 	Capacity, InUseSample, HighWaterSample uint32
 	NUMA                                   numa.Placement
 }
 
-// Metrics returns allocation-free atomic utilization observations.
+// Metrics returns allocation-free utilization observations. A nil pool returns
+// zero-valued metrics; samples may reflect different instants.
 func (p *Pool[T]) Metrics() PoolMetrics {
 	if p == nil {
 		return PoolMetrics{}

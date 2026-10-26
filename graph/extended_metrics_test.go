@@ -105,7 +105,7 @@ func TestWorkerTimingSamplesReportedProgress(t *testing.T) {
 	var reads uint64
 	counts := &groupCounters{identity: 1, timingEvery: 3, clock: func() uint64 { reads++; return reads * 10 }}
 	var progress bool
-	w := &executorWorker{metrics: counts, runners: []runner{{run: func() bool { return progress }}}}
+	w := &executorWorker{metrics: counts, timingEnabled: true, runners: []runner{{run: func() bool { return progress }}}}
 	var sources atomic.Bool
 	for i := 0; i < 7; i++ {
 		progress = i%2 == 0
@@ -116,15 +116,92 @@ func TestWorkerTimingSamplesReportedProgress(t *testing.T) {
 		t.Fatalf("worker timing reads=%d metrics=%+v", reads, got)
 	}
 	counts.timingEvery = 0
+	w.timingEnabled = false
 	w.pass(&sources)
 	if reads != 6 {
 		t.Fatal("disabled worker timing read the clock")
 	}
 }
 
+func TestGroupPassMetricsFlushEvery(t *testing.T) {
+	var reads uint64
+	counts := &groupCounters{
+		identity:    1,
+		timingEvery: 2,
+		flushEvery:  3,
+		clock:       func() uint64 { reads++; return reads * 10 },
+	}
+	w := &executorWorker{metrics: counts, timingEnabled: true, runners: []runner{{run: func() bool { return true }}}}
+	var sources atomic.Bool
+
+	for range 3 {
+		w.pass(&sources)
+	}
+	if got := (&Executor{metrics: &metricStore{groups: []*groupCounters{counts}}}).Metrics().Groups[0]; got.Passes != 3 || got.MeasuredPasses != 2 || got.WorkNanoseconds != 20 {
+		t.Fatalf("metrics at first flush = %+v", got)
+	}
+
+	w.runners[0].run = func() bool { return false }
+	for range 2 {
+		w.pass(&sources)
+	}
+	if got := (&Executor{metrics: &metricStore{groups: []*groupCounters{counts}}}).Metrics().Groups[0]; got.Passes != 3 {
+		t.Fatalf("unflushed pass metrics became visible early: %+v", got)
+	}
+
+	w.flushPassMetrics()
+	got := (&Executor{metrics: &metricStore{groups: []*groupCounters{counts}}}).Metrics().Groups[0]
+	if reads != 6 || got.Passes != 5 || got.IdlePasses != 2 || got.MeasuredPasses != 3 || got.WorkNanoseconds != 20 || got.IdleNanoseconds != 10 {
+		t.Fatalf("final reads=%d metrics=%+v", reads, got)
+	}
+}
+
+func TestSetGroupMetricsFlushEvery(t *testing.T) {
+	b := NewBuilder()
+	if err := SetGroupMetricsFlushEvery(b, 0); !errors.Is(err, ErrInvalidMetricsFlushEvery) {
+		t.Fatalf("zero flush interval error = %v", err)
+	}
+	if err := SetGroupMetricsFlushEvery(b, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetGroupMetricsFlushEvery(b, 8); !errors.Is(err, ErrGroupMetricsFlushConfigured) {
+		t.Fatalf("second configuration error = %v", err)
+	}
+
+	_, err := AddNode0(b, node.Stateful[struct{}, node.Node0[struct{}, node.Outputs0, error]]{
+		Factory: func() (struct{}, error) { return struct{}{}, nil },
+		Handlers: node.Node0[struct{}, node.Outputs0, error]{
+			Handle: func(*struct{}, *node.Outputs0) node.Result[error] { return node.Result[error]{} },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindCPU(t, b, DefaultGroupID, 0)
+	d, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := d.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.workers[0].metrics.flushEvery; got != 7 {
+		t.Fatalf("configured group metric flush interval = %d, want 7", got)
+	}
+	if err := e.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	got := e.Metrics().Groups[0]
+	local := e.workers[0].passMetrics
+	if got.Passes != local.passes || got.IdlePasses != local.idle || got.Passes == 0 {
+		t.Fatalf("final worker pass metrics = %+v, local totals = %+v", got, local)
+	}
+}
+
 func TestWorkerTimingUpdateAllocs(t *testing.T) {
 	var ticks uint64
-	w := &executorWorker{metrics: &groupCounters{timingEvery: 1, clock: func() uint64 { ticks++; return ticks }}}
+	w := &executorWorker{metrics: &groupCounters{timingEvery: 1, clock: func() uint64 { ticks++; return ticks }}, timingEnabled: true}
 	var sources atomic.Bool
 	if allocations := testing.AllocsPerRun(100, func() { w.pass(&sources) }); allocations != 0 {
 		t.Fatalf("allocations = %v", allocations)
@@ -184,7 +261,7 @@ func BenchmarkExtendedMetrics(b *testing.B) {
 		}
 	})
 	b.Run("worker-sampled-64", func(b *testing.B) {
-		w := &executorWorker{metrics: &groupCounters{timingEvery: 64, clock: monotonicClock()}}
+		w := &executorWorker{metrics: &groupCounters{timingEvery: 64, clock: monotonicClock()}, timingEnabled: true}
 		var sources atomic.Bool
 		b.ReportAllocs()
 		b.ResetTimer()

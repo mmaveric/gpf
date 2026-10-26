@@ -142,7 +142,10 @@ func (l *runtimeLogger) sink(group GroupID) func(node.ErrorEvent) bool {
 func (l *runtimeLogger) pass() bool {
 	for range l.rings {
 		ring := l.rings[l.cursor]
-		l.cursor = (l.cursor + 1) % len(l.rings)
+		l.cursor++
+		if l.cursor == len(l.rings) {
+			l.cursor = 0
+		}
 		var event node.ErrorEvent
 		if ring.pop(&event) {
 			l.handle(event)

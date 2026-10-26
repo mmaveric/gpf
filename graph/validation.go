@@ -12,6 +12,7 @@ import (
 type ValidationCode uint8
 
 const (
+	// ValidationCodeInvalid is the zero value and does not identify a validation issue.
 	ValidationCodeInvalid ValidationCode = iota
 	ValidationCodeInvalidBuilder
 	ValidationCodeEmptyGraph
@@ -121,6 +122,7 @@ func (e *ValidationError) Issues() []ValidationIssue {
 	return copyValidationIssues(e.issues)
 }
 
+// String returns the diagnostic label for c, or "invalid validation code" when unknown.
 func (c ValidationCode) String() string {
 	switch c {
 	case ValidationCodeInvalidBuilder:

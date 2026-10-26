@@ -63,6 +63,7 @@ type groupCounters struct {
 	replica                        uint32
 	clock                          func() uint64
 	timingEvery                    uint64
+	flushEvery                     uint64
 	measured, idleNanos, workNanos atomic.Uint64
 	identity                       GroupID
 	passes, idle                   atomic.Uint64
@@ -148,7 +149,7 @@ func newMetricStore(d *Definition) *metricStore {
 	if d.timing != nil && d.timing.Mode != TimingDisabled {
 		clock = d.timing.Clock
 		if clock == nil {
-			clock = monotonicClock()
+			clock = timingClock(d.timing.ClockSource)
 		}
 		every = d.timing.Every
 		if d.timing.Mode == TimingFull {
@@ -157,6 +158,10 @@ func newMetricStore(d *Definition) *metricStore {
 	}
 	for index, group := range d.groups {
 		row := &groupCounters{identity: group.id}
+		row.flushEvery = d.groupMetricsFlushEvery
+		if row.flushEvery == 0 {
+			row.flushEvery = 1
+		}
 		if len(d.groupInstances) != 0 {
 			row.identity = d.groupInstances[index].logical
 			row.replica = d.groupInstances[index].replica
@@ -165,7 +170,7 @@ func newMetricStore(d *Definition) *metricStore {
 			row.timingEvery = d.workerTiming.Every
 			row.clock = d.workerTiming.Clock
 			if row.clock == nil {
-				row.clock = monotonicClock()
+				row.clock = timingClock(d.workerTiming.ClockSource)
 			}
 		}
 		m.groups = append(m.groups, row)
@@ -217,7 +222,8 @@ func (t *normalizationTarget) nodeMetrics(id NodeID) *nodeCounters {
 
 // Metrics returns independent numeric rows without pausing workers or invoking
 // user callbacks. It is safe alongside processing, readers, and one Drain or
-// Close operation. Snapshot allocation belongs to the control plane.
+// Close operation. Group pass metrics may lag by up to the configured flush
+// interval minus one passes. Snapshot allocation belongs to the control plane.
 func (e *Executor) Metrics() MetricsSnapshot {
 	if e == nil || e.metrics == nil {
 		return MetricsSnapshot{}

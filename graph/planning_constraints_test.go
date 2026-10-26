@@ -358,6 +358,55 @@ func TestPlanGroupsPreservesExplicitIDsAndReportsMissingCPUs(t *testing.T) {
 	}
 }
 
+func TestPlanGroupsAndBuildSharePlanningFacts(t *testing.T) {
+	b := NewBuilder()
+	source, err := AddNode0(b, validSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink, err := AddNode1(b, validSink())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Connect(b, OutputPorts1(source.Outputs()).Out1, sink.Inputs().In1, EdgeConfig[int]{Capacity: 1, BatchCapacity: 1, Policy: queue.Drop}); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnableAutomaticPlanning(b); err != nil {
+		t.Fatal(err)
+	}
+
+	initialPreview, err := b.PlanGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range initialPreview.Groups {
+		if err := BindCPU(b, group.GroupID, int(group.GroupID-1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	preview, err := b.PlanGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := definition.EdgeQueuePlans(), preview.Edges; !reflect.DeepEqual(got, want) {
+		t.Fatalf("preview/build queue plans differ:\n got: %+v\nwant: %+v", got, want)
+	}
+	order := definition.TopologicalOrder()
+	if len(order) != len(preview.Nodes) {
+		t.Fatalf("preview nodes=%d, definition order=%d", len(preview.Nodes), len(order))
+	}
+	for index, assignment := range preview.Nodes {
+		if order[index] != assignment.NodeID {
+			t.Fatalf("preview node %d has ID %d, definition order has %d", index, assignment.NodeID, order[index])
+		}
+	}
+}
+
 func TestPlanGroupsRegistrationInvalidatesPreview(t *testing.T) {
 	b := NewBuilder()
 	connectValidPair(t, b)

@@ -13,9 +13,11 @@ import (
 type CounterID = node.CounterID
 
 var (
-	ErrInvalidCounterID  = errors.New("invalid user counter ID")
-	ErrCounterRegistered = errors.New("user counter already registered")
-	ErrUnknownCounter    = errors.New("unknown user counter")
+	ErrInvalidCounterID            = errors.New("invalid user counter ID")
+	ErrCounterRegistered           = errors.New("user counter already registered")
+	ErrUnknownCounter              = errors.New("unknown user counter")
+	ErrInvalidMetricsFlushEvery    = errors.New("invalid group metrics flush interval")
+	ErrGroupMetricsFlushConfigured = errors.New("group metrics flush interval already configured")
 )
 
 type counterDefinition struct {
@@ -164,11 +166,12 @@ func bindClosureCounters(target *normalizationTarget, id NodeID, bind node.Closu
 }
 
 // WorkerTimingConfig samples complete scheduler-pass wall durations. It does
-// not measure OS CPU usage. Every zero disables collection; nil Clock uses the
-// monotonic default, independently of handler timing configuration.
+// not measure OS CPU usage. Every zero disables collection; nil Clock selects
+// ClockSource, independently of handler timing configuration.
 type WorkerTimingConfig struct {
-	Every uint64
-	Clock func() uint64
+	Every       uint64
+	Clock       func() uint64
+	ClockSource TimingClockSource
 }
 
 func SetWorkerTiming(b *Builder, config WorkerTimingConfig) error {
@@ -177,6 +180,9 @@ func SetWorkerTiming(b *Builder, config WorkerTimingConfig) error {
 	}
 	if b.state == builderSealed {
 		return ErrBuilderSealed
+	}
+	if err := validateTimingClock(config.ClockSource, config.Clock != nil); err != nil {
+		return err
 	}
 	if b.workerTiming != nil {
 		return ErrTimingConfigured
@@ -187,25 +193,24 @@ func SetWorkerTiming(b *Builder, config WorkerTimingConfig) error {
 	return nil
 }
 
-func (m *groupCounters) beginTiming() (uint64, bool) {
-	if m.clock == nil || m.timingEvery == 0 || m.passes.Load()%m.timingEvery != 0 {
-		return 0, false
+// SetGroupMetricsFlushEvery configures how many scheduler passes a worker
+// accumulates before publishing its group metrics. The default is one pass.
+// Live group metrics can lag by at most every-1 passes; worker barriers publish
+// any remaining values. A value of zero is invalid.
+func SetGroupMetricsFlushEvery(b *Builder, every uint64) error {
+	if b == nil || b.owner == nil || b.state == builderInvalid {
+		return ErrInvalidBuilder
 	}
-	return m.clock(), true
-}
-
-func (m *groupCounters) recordPass(progress bool, started uint64, measured bool) {
-	if measured {
-		elapsed := m.clock() - started
-		m.measured.Add(1)
-		if progress {
-			m.workNanos.Add(elapsed)
-		} else {
-			m.idleNanos.Add(elapsed)
-		}
+	if b.state == builderSealed {
+		return ErrBuilderSealed
 	}
-	m.passes.Add(1)
-	if !progress {
-		m.idle.Add(1)
+	if every == 0 {
+		return ErrInvalidMetricsFlushEvery
 	}
+	if b.groupMetricsFlushEvery != 0 {
+		return ErrGroupMetricsFlushConfigured
+	}
+	b.groupMetricsFlushEvery = every
+	b.revision++
+	return nil
 }

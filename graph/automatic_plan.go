@@ -46,34 +46,16 @@ func (b *Builder) PlanGroups() (AutomaticGroupPreview, error) {
 			}
 		}
 	}
-	placements, groups, remote := compileGroupPlan(b.nodes, report.order, b.edges, b.placements, b.cpuBindings, b.numaBindings)
-	queuePlans, remote, err := compileEdgeQueuePlans(b.edges, placements)
+	logical, err := compileLogicalDefinition(b, report, true)
 	if err != nil {
 		return AutomaticGroupPreview{}, err
 	}
-	logical := &Definition{planningMode: true, explicitPlacements: explicitPlacementSlice(b.nodes, b.placements), owner: b.owner, nodes: append([]nodeMetadata(nil), b.nodes...), edges: append([]edgeMetadata(nil), b.edges...), edgeBindings: append([]edgeBinding(nil), b.edgeBindings...), order: append([]NodeID(nil), report.order...), placements: placements, groups: groups, edgeRemote: remote, edgeQueuePlans: queuePlans, counters: compileCounters(b)}
-	if b.logger != nil {
-		config := *b.logger
-		logical.logger = &config
-	}
-	if b.timing != nil {
-		config := *b.timing
-		logical.timing = &config
-	}
-	if b.workerTiming != nil {
-		config := *b.workerTiming
-		logical.workerTiming = &config
-	}
-	physical, err := expandReplicas(b, logical)
+	physical, err := expandExecutionDefinition(b, logical)
 	if err != nil {
 		return AutomaticGroupPreview{}, err
 	}
 	if physical == nil {
 		physical = logical
-	}
-	physical, err = expandNodePools(b, physical)
-	if err != nil {
-		return AutomaticGroupPreview{}, err
 	}
 	physical.planningMode = true
 	constraints := compilePlanningConstraints(physical, true)

@@ -39,28 +39,31 @@
 // to every effective group before Build. Build preserves dormant state, closure,
 // and eligible local queue factory bindings, including explicit lifecycle
 // callbacks, but invokes none of them. It compiles a private deterministic CPU
-// group plan: local edges retain the local queue path, while remote edges use a
-// framework-owned typed SPSC ring and reject custom factories. Failed results
-// discard ordinary output and publish one typed error batch when connected.
+// group plan and selects edge queue models from producer and consumer counts.
+// Failed results discard ordinary output and publish one typed error batch when
+// connected.
 //
-// Start materializes one locked OS-thread worker per fixed CPU-bound group with
-// fresh pools, queues, and node state. Linux workers attempt CPU affinity with a
-// pure-Go syscall; unsupported or rejected affinity retains the locked-thread
-// fallback. AffinityStatus returns the immutable physical-worker ordered result
-// for each logical group and zero-based replica.
-// Drain pauses all workers at runner boundaries, disables sources, and processes
-// accepted work to a stable global snapshot; Close discards queued and pending
-// batches from that barrier. Both dispatch owned lifecycle callbacks to their
-// locked owner workers in reverse canonical construction order. Automatic
-// grouping, CPU discovery or CPU-set policy, NUMA placement, node pools, richer
-// queue models, ingress, metrics, logging, error mapping, retries, panic recovery,
-// error fan-out/distribution, and concurrent starts
-// are unavailable as automatic execution features. PlanningConstraints and
-// MinimizeRemoteEdges are pure copied control-plane previews. The minimizer is
-// deterministic and checks local legality/quotient acyclicity; it does not
-// claim global optimality and never changes Build/Start placement.
-// Builder.PlanGroups composes constraint normalization and minimization into
-// an opt-in CPU-completeness preview; it does not seal or execute the builder.
-// NUMA annotations and typed allocator descriptors are copied inactive metadata;
-// no host topology discovery or NUMA-specific allocation is performed.
+// Start materializes locked OS-thread workers for the fixed execution groups,
+// replicas, and node pools, with fresh pools, queues, and node state. Linux
+// workers attempt CPU affinity with a pure-Go syscall; unsupported or rejected
+// affinity retains the locked-thread fallback. AffinityStatus returns the
+// immutable physical-worker ordered result for each logical group and replica.
+// Queue models are selected from producer and consumer cardinalities; remote
+// edges use the corresponding bounded typed queue. Start also wires ingress,
+// metrics, logging, error mapping, retries, broadcast, sharding, and fan-in.
+// Drain pauses workers at runner boundaries, disables sources, and processes
+// accepted work to a stable global snapshot subject to its context deadline;
+// Close discards queued and pending batches from that barrier. Both dispatch
+// owned lifecycle callbacks to their locked owner workers in reverse canonical
+// construction order. Panics are not recovered automatically.
+//
+// PlanningConstraints and MinimizeRemoteEdges are pure copied control-plane
+// previews. The minimizer is deterministic and checks local legality and
+// quotient acyclicity; it does not claim global optimality or change Build/Start
+// placement. Builder.PlanGroups composes constraint normalization and
+// minimization into an opt-in CPU-completeness preview; it does not seal or
+// execute the builder. NUMA annotations and typed allocator descriptors are
+// copied inactive metadata; there is no host topology discovery or NUMA-specific
+// allocation. Platform-specific fast paths were assessed and declined; the
+// portable Go implementation remains in use.
 package graph

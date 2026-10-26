@@ -45,28 +45,29 @@ const (
 // changed by callers. Factories and callbacks remain dormant until a future
 // runtime stage.
 type Definition struct {
-	planningMode       bool
-	explicitPlacements []GroupID
-	constraints        PlanningConstraints
-	execution          *Definition
-	nodeInstances      []nodeInstance
-	groupInstances     []groupInstance
-	edgeInstances      []edgeInstance
-	counters           []counterDefinition
-	workerTiming       *WorkerTimingConfig
-	timing             *TimingConfig
-	logger             *LoggerConfig
-	owner              *graphOwner
-	nodes              []nodeMetadata
-	edges              []edgeMetadata
-	edgeBindings       []edgeBinding
-	forward            []ValidationAdjacency
-	reverse            []ValidationAdjacency
-	order              []NodeID
-	placements         []GroupID
-	groups             []groupPlan
-	edgeRemote         []bool
-	edgeQueuePlans     []EdgeQueuePlan
+	planningMode           bool
+	explicitPlacements     []GroupID
+	constraints            PlanningConstraints
+	execution              *Definition
+	nodeInstances          []nodeInstance
+	groupInstances         []groupInstance
+	edgeInstances          []edgeInstance
+	counters               []counterDefinition
+	workerTiming           *WorkerTimingConfig
+	groupMetricsFlushEvery uint64
+	timing                 *TimingConfig
+	logger                 *LoggerConfig
+	owner                  *graphOwner
+	nodes                  []nodeMetadata
+	edges                  []edgeMetadata
+	edgeBindings           []edgeBinding
+	forward                []ValidationAdjacency
+	reverse                []ValidationAdjacency
+	order                  []NodeID
+	placements             []GroupID
+	groups                 []groupPlan
+	edgeRemote             []bool
+	edgeQueuePlans         []EdgeQueuePlan
 }
 
 // AutomaticNodeAssignment maps one physical node to its proposed plan group.
@@ -103,28 +104,29 @@ type AutomaticGroupPreview struct {
 
 // Builder collects mutable node-registration metadata. Builders must not be copied.
 type Builder struct {
-	revision             uint64
-	automaticCPUs        map[GroupID]int
-	automaticCPURevision uint64
-	planningMode         bool
-	replicas             map[GroupID]replicaConfig
-	nodePools            map[NodeID]nodePoolConfig
-	counters             map[counterDefinition]struct{}
-	workerTiming         *WorkerTimingConfig
-	timing               *TimingConfig
-	logger               *LoggerConfig
-	owner                *graphOwner
-	state                builderState
-	nextNodeID           NodeID
-	nodes                []nodeMetadata
-	inputs               map[endpointID]*inputMetadata
-	outputs              map[endpointID]*outputMetadata
-	edges                []edgeMetadata
-	edgeBindings         []edgeBinding
-	placements           map[NodeID]GroupID
-	cpuBindings          map[GroupID]int
-	numaBindings         map[GroupID]numa.Placement
-	definition           *Definition
+	revision               uint64
+	automaticCPUs          map[GroupID]int
+	automaticCPURevision   uint64
+	planningMode           bool
+	replicas               map[GroupID]replicaConfig
+	nodePools              map[NodeID]nodePoolConfig
+	counters               map[counterDefinition]struct{}
+	workerTiming           *WorkerTimingConfig
+	groupMetricsFlushEvery uint64
+	timing                 *TimingConfig
+	logger                 *LoggerConfig
+	owner                  *graphOwner
+	state                  builderState
+	nextNodeID             NodeID
+	nodes                  []nodeMetadata
+	inputs                 map[endpointID]*inputMetadata
+	outputs                map[endpointID]*outputMetadata
+	edges                  []edgeMetadata
+	edgeBindings           []edgeBinding
+	placements             map[NodeID]GroupID
+	cpuBindings            map[GroupID]int
+	numaBindings           map[GroupID]numa.Placement
+	definition             *Definition
 }
 
 type graphOwner struct{ _ byte }
@@ -173,7 +175,8 @@ var (
 	// ErrGroupCPUAssigned reports a second CPU binding for one group.
 	ErrGroupCPUAssigned = errors.New("graph group CPU already assigned")
 	// ErrCPUAlreadyBound reports a CPU bound to another effective group.
-	ErrCPUAlreadyBound     = errors.New("graph CPU already bound")
+	ErrCPUAlreadyBound = errors.New("graph CPU already bound")
+	// ErrGroupNUMAConfigured reports a second NUMA annotation for one group.
 	ErrGroupNUMAConfigured = errors.New("graph group NUMA placement already configured")
 )
 
@@ -565,6 +568,7 @@ type EdgeConfigError struct {
 	numaInvalid          bool
 }
 
+// Error returns the stable invalid-edge-configuration category message.
 func (e *EdgeConfigError) Error() string { return ErrInvalidEdgeConfig.Error() }
 
 // Unwrap identifies the invalid-edge-configuration error category.

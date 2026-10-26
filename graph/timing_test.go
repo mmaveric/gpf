@@ -6,10 +6,11 @@ import (
 	"testing"
 
 	"github.com/asharipov/gpf/node"
+	"github.com/loov/hrtime"
 )
 
 func TestTimingConfiguration(t *testing.T) {
-	for _, config := range []TimingConfig{{Mode: TimingSampled}, {Mode: 99}, {Mode: TimingFull, Every: 3}, {Mode: TimingDisabled, Every: 2}} {
+	for _, config := range []TimingConfig{{Mode: TimingSampled}, {Mode: 99}, {Mode: TimingFull, Every: 3}, {Mode: TimingDisabled, Every: 2}, {ClockSource: TimingClockSource(99)}} {
 		if err := SetTiming(NewBuilder(), config); !errors.Is(err, ErrInvalidTiming) {
 			t.Fatalf("invalid config %+v: %v", config, err)
 		}
@@ -23,6 +24,37 @@ func TestTimingConfiguration(t *testing.T) {
 	}
 	if err := SetTiming(nil, TimingConfig{}); !errors.Is(err, ErrInvalidBuilder) {
 		t.Fatal(err)
+	}
+}
+
+func TestTimingClockSources(t *testing.T) {
+	if !hrtime.TSCSupported() {
+		if err := SetTiming(NewBuilder(), TimingConfig{Mode: TimingFull, ClockSource: TimingClockTSC}); !errors.Is(err, ErrUnsupportedTimingClock) {
+			t.Fatalf("unsupported TSC config error = %v", err)
+		}
+		return
+	}
+
+	clock := timingClock(TimingClockTSC)
+	previous := clock()
+	for range 100 {
+		current := clock()
+		if current < previous {
+			t.Fatalf("TSC clock moved backwards: previous=%d current=%d", previous, current)
+		}
+		previous = current
+	}
+
+	b := NewBuilder()
+	if err := SetTiming(b, TimingConfig{Mode: TimingFull, ClockSource: TimingClockTSC}); err != nil {
+		t.Fatal(err)
+	}
+	if b.timing.ClockSource != TimingClockTSC {
+		t.Fatalf("configured clock source = %d, want %d", b.timing.ClockSource, TimingClockTSC)
+	}
+
+	if err := SetWorkerTiming(NewBuilder(), WorkerTimingConfig{Every: 1, ClockSource: TimingClockTSC}); err != nil {
+		t.Fatalf("configure worker TSC clock: %v", err)
 	}
 }
 
@@ -104,6 +136,34 @@ func TestTimingDefaultClockAndCopies(t *testing.T) {
 	}
 }
 
+func TestTimingTSCClockExecution(t *testing.T) {
+	if !hrtime.TSCSupported() {
+		t.Skip("invariant TSC is unavailable")
+	}
+	b := NewBuilder()
+	if _, err := AddNode0(b, validIsolated()); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetTiming(b, TimingConfig{Mode: TimingFull, ClockSource: TimingClockTSC}); err != nil {
+		t.Fatal(err)
+	}
+	bindCPU(t, b, DefaultGroupID, 0)
+	d, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := d.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Drain(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Metrics().Nodes[0]; got.MeasuredCalls == 0 {
+		t.Fatalf("TSC timing did not measure any calls: %+v", got)
+	}
+}
+
 func TestTimingUpdatesAllocs(t *testing.T) {
 	for _, every := range []uint64{0, 1, 3} {
 		name := "disabled"
@@ -128,14 +188,22 @@ func BenchmarkTimingModes(b *testing.B) {
 		name  string
 		every uint64
 	}{{"off", 0}, {"full", 1}, {"sampled-64", 64}} {
-		b.Run(mode.name, func(b *testing.B) {
-			target, _ := timedSource(b, mode.every, monotonicClock())
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				target.runners[0].run()
+		for _, source := range []struct {
+			name  string
+			clock TimingClockSource
+		}{{"time", TimingClockStandard}, {"tsc", TimingClockTSC}} {
+			if source.clock == TimingClockTSC && !hrtime.TSCSupported() {
+				continue
 			}
-		})
+			b.Run(mode.name+"/"+source.name, func(b *testing.B) {
+				target, _ := timedSource(b, mode.every, timingClock(source.clock))
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					target.runners[0].run()
+				}
+			})
+		}
 	}
 }
 

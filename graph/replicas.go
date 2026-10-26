@@ -248,7 +248,7 @@ func expandReplicas(b *Builder, logical *Definition) (*Definition, error) {
 			usedCPUs[cpu] = true
 		}
 	}
-	physical := &Definition{owner: logical.owner, planningMode: logical.planningMode, explicitPlacements: append([]GroupID(nil), logical.explicitPlacements...), logger: logical.logger, timing: logical.timing, workerTiming: logical.workerTiming}
+	physical := &Definition{owner: logical.owner, planningMode: logical.planningMode, explicitPlacements: append([]GroupID(nil), logical.explicitPlacements...), logger: logical.logger, timing: logical.timing, workerTiming: logical.workerTiming, groupMetricsFlushEvery: logical.groupMetricsFlushEvery}
 	groupIDs := make(map[GroupID][]GroupID)
 	for _, g := range logical.groups {
 		count := uint32(1)
@@ -430,7 +430,7 @@ func expandNodePools(b *Builder, input *Definition) (*Definition, error) {
 			}
 		}
 	}
-	physical := &Definition{owner: input.owner, planningMode: input.planningMode, explicitPlacements: append([]GroupID(nil), input.explicitPlacements...), logger: input.logger, timing: input.timing, workerTiming: input.workerTiming, placements: []GroupID{InvalidGroupID}}
+	physical := &Definition{owner: input.owner, planningMode: input.planningMode, explicitPlacements: append([]GroupID(nil), input.explicitPlacements...), logger: input.logger, timing: input.timing, workerTiming: input.workerTiming, groupMetricsFlushEvery: input.groupMetricsFlushEvery, placements: []GroupID{InvalidGroupID}}
 	physicalNodeIDs := make(map[NodeID][]NodeID)
 	physicalGroups := make(map[GroupID]groupPlan)
 	physicalGroupInstances := make(map[GroupID]groupInstance)

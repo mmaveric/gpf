@@ -5,10 +5,9 @@
 // on one group worker. Wait retains a full-edge batch for a later pass so
 // downstream work can progress; Drop releases it. A Factory constructs fresh
 // operations only for each started local edge and receives Capacity,
-// BatchCapacity, and Policy. Cross-group graph edges currently use the graph's
-// built-in typed SPSC ring in the current fixed topology. Graph definitions
-// retain selected models from physical endpoint cardinalities; future expanded
-// topologies use the corresponding concurrent constructors at Start.
+// BatchCapacity, and Policy. Graph definitions select a queue model from
+// producer and consumer cardinalities; runtime construction uses the bounded
+// SPSC, MPSC, SPMC, or MPMC implementation required by that topology.
 //
 // NewMPSC, NewSPMC, and NewMPMC return preallocated bounded typed queues. Their
 // Try operations never wait for capacity or another caller: contention, full or

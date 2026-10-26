@@ -37,30 +37,56 @@ func (b *Builder) Build() (*Definition, error) {
 		return nil, err
 	}
 
+	definition, err := compileLogicalDefinition(b, report, b.planningMode)
+	if err != nil {
+		return nil, err
+	}
+	definition.forward = copyValidationAdjacency(report.forward)
+	definition.reverse = copyValidationAdjacency(report.reverse)
+	definition.constraints = compilePlanningConstraints(definition, b.planningMode)
+	definition.groupMetricsFlushEvery = b.groupMetricsFlushEvery
+	if err := validatePlanningConstraints(definition.constraints); err != nil {
+		return nil, err
+	}
+	execution, err := expandExecutionDefinition(b, definition)
+	if err != nil {
+		return nil, err
+	}
+	if execution != nil {
+		execution.planningMode = b.planningMode
+		execution.constraints = compilePlanningConstraints(execution, b.planningMode)
+		if err := validatePlanningConstraints(execution.constraints); err != nil {
+			return nil, err
+		}
+	}
+	definition.execution = execution
+	b.definition = definition
+	b.state = builderSealed
+	return definition, nil
+}
+
+// compileLogicalDefinition builds the common, unexpanded planning result used by
+// executable definitions and automatic previews.
+func compileLogicalDefinition(b *Builder, report *ValidationReport, planningMode bool) (*Definition, error) {
 	placements, groups, edgeRemote := compileGroupPlan(b.nodes, report.order, b.edges, b.placements, b.cpuBindings, b.numaBindings)
 	edgeQueuePlans, edgeRemote, err := compileEdgeQueuePlans(b.edges, placements)
 	if err != nil {
 		return nil, err
 	}
 	definition := &Definition{
-		planningMode:       b.planningMode,
-		explicitPlacements: explicitPlacementSlice(b.nodes, b.placements),
-		counters:           compileCounters(b),
-		owner:              b.owner,
-		nodes:              append([]nodeMetadata(nil), b.nodes...),
-		edges:              append([]edgeMetadata(nil), b.edges...),
-		edgeBindings:       append([]edgeBinding(nil), b.edgeBindings...),
-		forward:            copyValidationAdjacency(report.forward),
-		reverse:            copyValidationAdjacency(report.reverse),
-		order:              append([]NodeID(nil), report.order...),
-		placements:         placements,
-		groups:             groups,
-		edgeRemote:         edgeRemote,
-		edgeQueuePlans:     edgeQueuePlans,
-	}
-	definition.constraints = compilePlanningConstraints(definition, b.planningMode)
-	if err := validatePlanningConstraints(definition.constraints); err != nil {
-		return nil, err
+		planningMode:           planningMode,
+		explicitPlacements:     explicitPlacementSlice(b.nodes, b.placements),
+		counters:               compileCounters(b),
+		owner:                  b.owner,
+		nodes:                  append([]nodeMetadata(nil), b.nodes...),
+		edges:                  append([]edgeMetadata(nil), b.edges...),
+		edgeBindings:           append([]edgeBinding(nil), b.edgeBindings...),
+		order:                  append([]NodeID(nil), report.order...),
+		placements:             placements,
+		groups:                 groups,
+		edgeRemote:             edgeRemote,
+		edgeQueuePlans:         edgeQueuePlans,
+		groupMetricsFlushEvery: b.groupMetricsFlushEvery,
 	}
 	if b.logger != nil {
 		config := *b.logger
@@ -74,32 +100,29 @@ func (b *Builder) Build() (*Definition, error) {
 		config := *b.workerTiming
 		definition.workerTiming = &config
 	}
-	execution, err := expandReplicas(b, definition)
+	return definition, nil
+}
+
+// expandExecutionDefinition applies the common physical expansion used by
+// executable definitions and automatic previews. A nil result means no
+// expansion was needed, so callers continue using the logical definition.
+func expandExecutionDefinition(b *Builder, logical *Definition) (*Definition, error) {
+	execution, err := expandReplicas(b, logical)
 	if err != nil {
 		return nil, err
 	}
-	baseExecution := definition
+	base := logical
 	if execution != nil {
-		baseExecution = execution
+		base = execution
 	}
-	pooled, err := expandNodePools(b, baseExecution)
+	pooled, err := expandNodePools(b, base)
 	if err != nil {
 		return nil, err
 	}
-	if pooled != baseExecution {
+	if pooled != base {
 		execution = pooled
 	}
-	if execution != nil {
-		execution.planningMode = b.planningMode
-		execution.constraints = compilePlanningConstraints(execution, b.planningMode)
-		if err := validatePlanningConstraints(execution.constraints); err != nil {
-			return nil, err
-		}
-	}
-	definition.execution = execution
-	b.definition = definition
-	b.state = builderSealed
-	return definition, nil
+	return execution, nil
 }
 
 func explicitPlacementSlice(nodes []nodeMetadata, placements map[NodeID]GroupID) []GroupID {

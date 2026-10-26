@@ -26,12 +26,13 @@ type PoolConfig struct {
 	OwnerID        uint32
 }
 
-// Allocator is a typed dormant backing-storage descriptor. Pool construction
-// currently ignores it and continues using portable storage allocation.
+// Allocator describes a typed backing-storage allocation function. Pool
+// construction currently retains this descriptor but does not call it.
 type Allocator[T any] func(elements int) ([]T, error)
 
-// PoolOptions combines portable pool limits with a typed inactive allocator
-// descriptor. NewPoolWithOptions currently allocates using the portable path.
+// PoolOptions combines pool limits with an optional typed allocator
+// descriptor. NewPoolWithOptions currently uses portable Go allocation and
+// retains the descriptor without calling it.
 type PoolOptions[T any] struct {
 	Config    PoolConfig
 	Allocator Allocator[T]
@@ -178,7 +179,8 @@ func NewPool[T any](config PoolConfig) (*Pool[T], error) {
 	return pool, nil
 }
 
-// OwnerID returns the pool's optional numeric transport owner identity.
+// OwnerID returns the numeric transport owner identity configured for the
+// batch's pool, or zero when the batch has no pool.
 func (b Batch[T]) OwnerID() uint32 {
 	if b.slot == nil || b.slot.pool == nil {
 		return 0

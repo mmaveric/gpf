@@ -132,14 +132,21 @@ type ReadyMask uint8
 type PortIndex uint8
 
 const (
-	// Port1 is zero so its readiness maps directly to the least-significant bit.
+	// Port1 identifies the first input position; its readiness maps to bit 0.
 	Port1 PortIndex = iota
+	// Port2 identifies the second input position and maps to bit 1.
 	Port2
+	// Port3 identifies the third input position and maps to bit 2.
 	Port3
+	// Port4 identifies the fourth input position and maps to bit 3.
 	Port4
+	// Port5 identifies the fifth input position and maps to bit 4.
 	Port5
+	// Port6 identifies the sixth input position and maps to bit 5.
 	Port6
+	// Port7 identifies the seventh input position and maps to bit 6.
 	Port7
+	// Port8 identifies the eighth input position and maps to bit 7.
 	Port8
 )
 

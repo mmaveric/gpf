@@ -68,20 +68,31 @@ type workerControl struct {
 }
 
 type executorWorker struct {
-	paused       atomic.Bool
-	closing      *atomic.Bool
-	logicalGroup GroupID
-	replica      uint32
-	logicalNode  NodeID
-	nodeWorker   uint32
-	isNodeWorker bool
-	metrics      *groupCounters
-	group        GroupID
-	cpu          int
-	runners      []runner
-	commands     chan workerControl
-	ready        chan AffinityStatus
-	done         chan struct{}
+	paused        atomic.Bool
+	closing       *atomic.Bool
+	logicalGroup  GroupID
+	replica       uint32
+	logicalNode   NodeID
+	nodeWorker    uint32
+	isNodeWorker  bool
+	metrics       *groupCounters
+	timingEnabled bool
+	passMetrics   workerPassMetrics
+	group         GroupID
+	cpu           int
+	runners       []runner
+	commands      chan workerControl
+	ready         chan AffinityStatus
+	done          chan struct{}
+}
+
+type workerPassMetrics struct {
+	passes, idle, measured uint64
+	idleNanos, workNanos   uint64
+	flushEvery             uint64
+	passesSinceFlush       uint64
+	idleDirty              bool
+	timingDirty            bool
 }
 
 type runner struct {
@@ -358,7 +369,11 @@ func (d *Definition) Start() (*Executor, error) {
 	e.runners = target.runners
 	for groupIndex, group := range d.groups {
 		worker := &executorWorker{
-			metrics:  metrics.groups[groupIndex],
+			metrics:       metrics.groups[groupIndex],
+			timingEnabled: metrics.groups[groupIndex].clock != nil && metrics.groups[groupIndex].timingEvery != 0,
+			passMetrics: workerPassMetrics{
+				flushEvery: metrics.groups[groupIndex].flushEvery,
+			},
 			group:    group.id,
 			cpu:      group.cpu,
 			commands: make(chan workerControl),
@@ -661,6 +676,7 @@ running:
 func (w *executorWorker) handle(control workerControl) bool {
 	switch control.command {
 	case workerPause:
+		w.flushPassMetrics()
 		w.paused.Store(true)
 		w.respond(control, nil)
 		for {
@@ -671,6 +687,7 @@ func (w *executorWorker) handle(control workerControl) bool {
 				w.respond(control, nil)
 				return false
 			case workerStop:
+				w.flushPassMetrics()
 				w.respond(control, nil)
 				return true
 			case workerCall:
@@ -680,6 +697,7 @@ func (w *executorWorker) handle(control workerControl) bool {
 	case workerCall:
 		w.respond(control, callWorker(control.callback))
 	case workerStop:
+		w.flushPassMetrics()
 		w.respond(control, nil)
 		return true
 	}
@@ -689,11 +707,12 @@ func (w *executorWorker) handle(control workerControl) bool {
 func (w *executorWorker) pass(sources *atomic.Bool) bool {
 	var started uint64
 	var measured bool
-	if w.metrics != nil {
-		started, measured = w.metrics.beginTiming()
+	if w.timingEnabled {
+		started, measured = w.beginPassTiming()
 	}
 	progress := false
-	for _, runner := range w.runners {
+	for i := range w.runners {
+		runner := &w.runners[i]
 		if runner.source && w.closing != nil && w.closing.Load() {
 			continue
 		}
@@ -705,9 +724,67 @@ func (w *executorWorker) pass(sources *atomic.Bool) bool {
 		}
 	}
 	if w.metrics != nil {
-		w.metrics.recordPass(progress, started, measured)
+		w.recordPassMetrics(progress, started, measured)
 	}
 	return progress
+}
+
+func (w *executorWorker) beginPassTiming() (uint64, bool) {
+	m := w.metrics
+	if m.clock == nil || m.timingEvery == 0 || w.passMetrics.passes%m.timingEvery != 0 {
+		return 0, false
+	}
+	return m.clock(), true
+}
+
+func (w *executorWorker) recordPassMetrics(progress bool, started uint64, measured bool) {
+	metrics := w.metrics
+	local := &w.passMetrics
+	if measured {
+		elapsed := metrics.clock() - started
+		local.measured++
+		local.timingDirty = true
+		if progress {
+			local.workNanos += elapsed
+		} else {
+			local.idleNanos += elapsed
+		}
+	}
+	local.passes++
+	if !progress {
+		local.idle++
+		local.idleDirty = true
+	}
+	local.passesSinceFlush++
+	if local.flushEvery == 0 {
+		local.flushEvery = metrics.flushEvery
+		if local.flushEvery == 0 {
+			local.flushEvery = 1
+		}
+	}
+	if local.passesSinceFlush >= local.flushEvery {
+		w.flushPassMetrics()
+	}
+}
+
+func (w *executorWorker) flushPassMetrics() {
+	metrics := w.metrics
+	local := &w.passMetrics
+	if metrics == nil || local.passesSinceFlush == 0 {
+		return
+	}
+	metrics.passes.Store(local.passes)
+	if local.idleDirty {
+		metrics.idle.Store(local.idle)
+		local.idleDirty = false
+	}
+	if local.timingDirty {
+		metrics.measured.Store(local.measured)
+		metrics.idleNanos.Store(local.idleNanos)
+		metrics.workNanos.Store(local.workNanos)
+		local.timingDirty = false
+	}
+	local.passesSinceFlush = 0
 }
 
 func (e *Executor) closeLifecycles() error {

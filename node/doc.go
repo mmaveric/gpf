@@ -13,10 +13,10 @@
 // type that graph exposes as an optional ErrorPort. A failed result causes graph
 // to discard ordinary output and route its typed Value only through ConnectError.
 //
-// Stateful and ClosureFactory describe future replica-local construction. Their
-// factories must create fresh mutable state for each start, while captured
+// Stateful and ClosureFactory provide replica-local construction. Their
+// factories create fresh mutable state for each worker instance, while captured
 // configuration remains immutable. Graph registration records only static
-// factory and handler facts; Build does not invoke factories. Fixed manual
-// placement can run handlers in one group worker and move ordinary batches to
-// another through graph's typed SPSC boundary; replicas remain unavailable.
+// factory and handler facts; Build does not invoke factories. Placement can run
+// handlers in different groups and route batches through graph's typed queues,
+// whose model is selected from producer and consumer cardinalities.
 package node
