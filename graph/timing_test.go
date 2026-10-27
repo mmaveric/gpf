@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/mmaveric/gpf/node"
 	"github.com/loov/hrtime"
+	"github.com/mmaveric/gpf/node"
 )
 
 func TestTimingConfiguration(t *testing.T) {
