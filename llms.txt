@@ -1,16 +1,29 @@
 # Go Pipeline Framework
 
-This Go module (`github.com/mmaveric/gpf`, Go 1.22+) provides typed batches,
-generated typed nodes, and a graph runtime for batch-oriented pipelines.
+This Go module (`github.com/mmaveric/gpf`) provides typed batches, generated
+typed nodes, and a graph runtime for batch-oriented pipelines. go.mod declares
+Go 1.22; fresh local suites passed on Go 1.22.12 and Go 1.26.8, linux/amd64,
+against the same completed source snapshot, not a general Go/OS support promise.
+The project is unreleased with target v0.1.0 experimental; API stability is not
+promised. Licensing is deferred and remains a publication blocker.
 
 ## Project documentation
 
-- [README](README.md): project overview, API behavior, runtime contracts,
-  benchmarks, and runnable showcase.
+- [README](README.md): getting started, feature map, ownership, and limitations.
+- [Quickstart](examples/quickstart/README.md): runnable finite typed ingress,
+  transform, integer sink, and typed error sink; CPU selection and DOT export.
+- [Showcase](examples/showcase/README.md): larger order-processing workload.
+- [Standalone comparison](examples/standalone-showcase/README.md): comparison
+  workload and its current measurement instructions.
+- [Fixture generation](examples/testdata/README.md): optional deterministic JSON,
+  explicit output paths, no overwrite; ordinary tests do not need these files.
 - [Specification guide](spec/README.md): reading map and cross-cutting contracts.
 - [Planning and performance spec](spec/05-planning-performance.md): includes
   inactive NUMA metadata and future placement activation gates.
 - [Contributing](CONTRIBUTING.md): local development and verification commands.
+- [Release preparation](RELEASE.md): support evidence, pending checks, licensing,
+  API-stability decisions, and publication gates; not release authorization.
+- [Changelog](CHANGELOG.md): unreleased user-visible changes and baseline.
 - [Go module](go.mod): module path and minimum Go version.
 
 ## Main packages
@@ -22,5 +35,13 @@ generated typed nodes, and a graph runtime for batch-oriented pipelines.
 - `numa`: placement metadata types.
 - `runtime`: runtime support types.
 
-For API details, see package documentation and source. Run `go test ./...` from
-the repository root to test the module.
+For API details, see package documentation, specifications, and source. NUMA
+metadata and allocator descriptors are inactive. DrainContext cancellation is
+cooperative, not a hard interruption of callbacks. There is no panic recovery.
+Open [conformance gates](RELEASE.md#conformance-review-gates) distinguish current
+limitations from intended guarantees; passing tests do not resolve them.
+
+From the repository root, run `go run ./examples/quickstart` to begin and
+`go test ./...` to test. Consult CONTRIBUTING.md for fresh/race verification;
+also run `go test -count=1 ./examples/testdata/generate` explicitly because
+`./...` skips testdata. Do not turn a cross-build into a runtime-platform claim.

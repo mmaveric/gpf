@@ -1,228 +1,163 @@
 # Topologies and transport
 
-This document consolidates the current normative requirements. Scenarios are retained where they add behavioral detail; shared concepts should be read together across sections.
-
-
-## bounded-concurrent-queues
-
-Specify bounded portable typed queues for single and multiple producer/consumer combinations.
-
-
-### Bounded nonblocking queue models
-
-The queue package SHALL provide validated preallocated MPSC, SPMC, and MPMC operations compatible with QueueOps[T]. TryPush and TryPop SHALL not block waiting for another caller. Failed push SHALL retain caller ownership; successful pop SHALL return a fully published owned batch exactly once. Concurrent Len SHALL be bounded by capacity and SHALL be documented as observational. No steady-state framework allocation SHALL occur.
-#### Concurrent ownership transfer
-- multiple valid producers and consumers exchange unique batches through an MPMC ring
-- every successful publication is popped once without corrupted contents or capacity growth
-
-
-### Validate capacities and counter boundaries
-
-Construction SHALL reject zero or unrepresentable capacities. Producer and consumer cursors SHALL wrap modulo capacity without losing or duplicating slot ownership. Failed operations SHALL not consume storage.
-#### Reject invalid storage
-- construction receives an invalid capacity
-- it returns an error without a usable queue or partially published state
-
-
-## broadcast-fan-out
-
-Specify typed copying broadcast with exclusive branch storage and independent bounded delivery outcomes.
-
-
-### Explicit independent broadcast copies
-
-Broadcast SHALL atomically register a fixed list of distinct compatible ordinary input destinations with matching batch capacities. Each delivered branch SHALL receive a distinct pooled storage slot containing the source's logical elements. Copying pointer-containing elements SHALL be documented as shallow. Ordinary Connect and error-route cardinality SHALL remain unchanged.
-#### Deliver to two branches
-- a valid three-element batch broadcasts to two available branches
-- both observe the original elements in independent owned storage slots
-
-
-### Independent bounded branch outcomes
-
-Pool exhaustion SHALL drop only the affected branch copy. Queue Drop SHALL release that branch; Wait SHALL retry its retained copy without recopying or redelivering completed branches. Drain and Close SHALL account for all pending branch ownership exactly once. Broadcast batches SHALL respect the configured capacity precondition; a moved oversized batch SHALL be rejected on every branch with separate capacity-rejection counters.
-#### Retry one waiting branch
-- one branch accepts its copy while another branch's Wait queue is full
-- only the waiting branch retries, and the accepted branch is neither recopied nor redelivered
-
-
-### Fixed-topology endpoint compatibility
-
-Broadcast sources and destinations SHALL NOT participate in whole-group replica or node-worker-pool expansion in this version. Build SHALL reject such a topology with `ErrBroadcastParallelExpansion`, leaving broadcast execution unavailable rather than assigning ambiguous delivery semantics.
-#### Reject an expanded broadcast endpoint
-- either endpoint of a registered broadcast is included in a replica or node-worker-pool expansion
-- Build returns `ErrBroadcastParallelExpansion` before runtime resources are created
-#### One branch waits
-- one branch accepts and another branch waits on a full queue
-- retries affect only the waiting branch and cannot duplicate the already accepted delivery
-
-
-## element-sharding
-
-Define fixed typed per-element distribution into bounded branch-specific pooled batches.
-
-
-### Exactly one branch choice per element
-
-An explicit sharding connection SHALL validate a fixed compatible destination list and typed selector before Build. Each processed element SHALL be assigned once to one valid branch, preserving element values without boxing. Invalid selector indices SHALL be documented as contract violations. Destination registration failure SHALL not partially connect topology.
-#### Map selector indices to supplied input order
-- destinations are supplied in a non-canonical order and the selector returns index `i`
-- the element is sent to the destination at position `i` in the supplied list
-#### Reject an invalid selector result
-- the selector returns an index outside the fixed destination list
-- execution panics with `ErrInvalidShardIndex` instead of silently remapping the element
-#### Resume a waiting shard
-- a selected branch waits for queue space
-- resumption uses the retained branch choice without invoking the selector again for that element
-
-
-### Bounded branch staging and cleanup
-
-Sharding SHALL hold bounded per-branch staging and at most one active source batch, splitting full batches and flushing partial batches at input completion. Branch Wait/Drop and pool exhaustion SHALL have distinct element-loss accounting. Close SHALL release all source, partial, and pending batches exactly once. Global cross-branch order SHALL not be guaranteed.
-#### Distribute beyond branch batch capacity
-- an input contains more elements for one branch than its staging batch can hold
-- the branch receives successive bounded batches or configured losses without allocating additional staging storage
-#### Count branch pool exhaustion separately
-- a selected branch has no staging slot available for an element
-- only that element is dropped, its `PoolDroppedElements` increases, and queue-drop element counts remain unchanged
-#### Reclaim pending sharding state on Close
-- Close reaches a pending sharding operation with queued, staged, and unassigned elements
-- every owned batch is released once and unassigned source elements are counted in `ShardShutdownElements`
-
-
-### Fixed-topology endpoint compatibility
-
-Sharding sources and destinations SHALL NOT participate in whole-group replica or node-worker-pool expansion in this version. Build SHALL reject such a topology with `ErrShardParallelExpansion` before runtime resources are created.
-#### Reject an expanded sharding endpoint
-- a sharding source or destination is included in a replica or node-worker-pool expansion
-- Build rejects the topology with `ErrShardParallelExpansion`
-
-
-## unordered-fan-in
-
-Define explicit homogeneous multi-producer merging with exclusive batches and unordered downstream delivery.
-
-
-### Atomic typed merge registration
-
-Fan-in SHALL register compatible ordinary producers and one logical input atomically. Invalid, foreign, duplicate, already connected, or cyclic endpoints SHALL reject without partial topology mutation. Ordinary Connect SHALL retain its single-producer input contract.
-#### Reject an invalid producer list
-- one producer in a requested merge belongs to another builder
-- no producer or input in that request becomes connected
-
-
-### Unordered exclusive merged delivery
-
-Each successfully accepted batch SHALL be delivered once through the selected shared bounded queue with its originating pool identity intact. No cross-producer ordering SHALL be guaranteed. Stop SHALL reclaim each shared queued batch and each producer's pending batch exactly once.
-#### Drain multiple producer pools
-- different typed-compatible source pools feed one merged sink
-- accepted batches reach the sink without duplication and releases return to the corresponding origin pools
-
-#### Apply independent branch queue policy
-- a shared fan-in queue is full under Drop or Wait
-- the publishing branch alone records Drop or retains its own pending output while other producers continue
-
-
-## group-replication
-
-Define fixed whole-group replicas with typed work distribution and independently owned runtime state.
-
-
-### Static CPU-bound group replicas
-
-A group SHALL accept a positive fixed replica count and explicit unique nonnegative CPUs per physical instance. Build SHALL validate and freeze expansion without invoking factories. Internal edges SHALL connect corresponding replica instances; shared boundaries SHALL distribute each accepted batch to one consumer, not broadcast it. Replica identities SHALL be deterministic and inspectable.
-#### Expand a two-node group
-- a group containing two connected nodes is configured with three replicas and complete CPU assignments
-- Start creates three workers and three paired internal edge instances without multiplying accepted boundary batches
-
-
-### Independent replica lifecycle
-
-Each physical node replica SHALL receive one fresh factory result per Start and owner-worker lifecycle callbacks. Startup failure SHALL close each successfully constructed lifecycle once. Node-pool overlap and incomplete CPU bindings SHALL be rejected before execution.
-#### Roll back a replica failure
-- a later replica Init fails after earlier replicas constructed successfully
-- every successfully owned lifecycle closes once and no worker or batch remains owned by the failed Start
-
-
-### Explicit ingress and counter replica boundaries
-
-Groups containing ingress adapters SHALL reject replica counts greater than one before runtime construction. Unreplicated ingress SHALL be allowed to feed replicated downstream groups. Generated counter binders SHALL install independent per-replica slots. CounterForReplica SHALL resolve one explicit zero-based replica index; Counter SHALL reject a node with multiple replicas as ambiguous without returning an arbitrary slot.
-
-#### Reject replicated ingress
-- a group containing an ingress adapter is configured with multiple replicas
-- Build rejects the configuration without invoking factories or creating producer endpoints
-
-#### Resolve replica-local counters
-- a node with three replicas has a registered counter
-- each replica has independent storage, explicit lookup selects only its requested replica, and logical-only lookup reports ambiguity
-
-
-## node-worker-pools
-
-Specify fixed node-level worker expansion with independent state and typed shared batch queues.
-
-
-### Fixed node worker expansion
-
-A logical node SHALL support a positive fixed worker count with explicit unique nonnegative CPU bindings. Every worker SHALL own a fresh factory result and per-input typed handlers/selectors. Shared input batches SHALL be processed by one worker, never broadcast implicitly. Worker identities SHALL be stable and observable.
-#### Process pooled input
-- multiple workers consume accepted unique input batches
-- each batch is invoked once by one worker and state mutation remains local to that worker
-
-
-### Validate pooled topology and lifecycle
-
-Build SHALL reject invalid counts, missing CPUs, and overlap with whole-group replication without invoking factories. Drain and Close SHALL include every physical worker and return queued/pending work once. No global output ordering SHALL be promised.
-#### Reject overlapping expansion
-- a node pool is requested inside a replicated group
-- validation fails before any runtime instance is created
-
-
-### Per-port shared transport without implicit broadcast
-
-Each logical input of a pooled node SHALL have one bounded shared queue with one consumer owner per physical worker, and each logical output SHALL use a queue selected from its physical producer/consumer cardinality. A batch SHALL be acquired from a producer-local pool and accepted by at most one downstream consumer. ReadyMask selection SHALL remain typed and local to the worker that invokes the selected handler. No ordering or fairness guarantee beyond accepted ownership SHALL be added.
-
-#### Route heterogeneous ready inputs
-- two differently typed logical inputs are ready across a pooled node's workers
-- each worker's selector receives only its own ReadyMask and dispatches a matching typed handler exactly once
-
-
-## automatic-queue-selection
-
-Define deterministic built-in queue choice from physical endpoint concurrency after topology expansion.
-
-
-### Select the least concurrent valid model
-
-Physical edges SHALL use local transport only when all operations have one worker owner. Cross-worker 1:1, many:1, 1:many, and many:many endpoints SHALL select SPSC, MPSC, SPMC, and MPMC respectively. Invalid zero endpoint counts SHALL be rejected. Copied edge-plan metadata SHALL report model and cardinalities.
-#### Resolve a shared consumer
-- an expanded edge has three producer workers and one consumer worker
-- its plan selects MPSC instead of SPSC or MPMC
-
-
-### Retain factory dormancy
-
-Build SHALL select models without creating queues or invoking callbacks. Start SHALL materialize fresh typed storage. A custom factory incompatible with physical multi-worker ownership SHALL be rejected before invocation.
-#### Reject unsafe custom transport
-- a custom local-only factory is configured on an expanded cross-worker edge
-- validation reports the edge and leaves the factory uncalled
-
-
-## remote-edge-minimization
-
-Define deterministic constraint-preserving component coalescing that reduces unnecessary remote transport.
-
-
-### Locally minimize legal remote boundaries
-
-The coalescing algorithm SHALL preserve fixed labels and mandatory cuts, never increase remote-edge count, and terminate with no eligible adjacent improving merge. Results SHALL be deterministic for equivalent canonical inputs. It SHALL not claim globally optimal partitioning.
-#### Coalesce an unconstrained DAG
-- no manual or parallelism boundary constrains an input DAG
-- the resulting plan places compatible nodes in one group with zero remote edges
-
-
-### Preserve quotient acyclicity
-
-Every accepted merge SHALL preserve an acyclic group quotient graph as well as original node topology. Reports SHALL include before/after remote-edge counts and constraint rejection reasons without invoking factories.
-#### Reject a cyclic contraction
-- merging an adjacent shortcut's endpoints would create a cycle through an intermediate component
-- the merge is rejected even though the original node graph is a DAG
+Ordinary [Connect and ConnectError](01-typed-graph.md#connections-and-local-error-precedence)
+retain one producer per input and one consumer per output. Parallel delivery must
+be explicit: broadcast copies, sharding divides elements, fan-in merges producers,
+and physical expansion distributes each accepted batch to one consumer.
+
+## Queue models and selection
+
+`ResolveQueueModel(producers, consumers uint32, sameWorker bool) (QueueModel, error)`
+must be pure and select the least concurrent valid built-in transport:
+
+| Physical ownership | Producers | Consumers | Model |
+| --- | --- | --- | --- |
+| All operations on one worker | 1 | 1 | `QueueModelLocal` |
+| Cross-worker | 1 | 1 | `QueueModelSPSC` |
+| Cross-worker | >1 | 1 | `QueueModelMPSC` |
+| Cross-worker | 1 | >1 | `QueueModelSPMC` |
+| Cross-worker | >1 | >1 | `QueueModelMPMC` |
+
+Zero endpoint counts or sameWorker with counts other than 1:1 must return
+`QueueModelInvalid` and `ErrInvalidQueueCardinality`. Count **workers**, not logical
+ports: multiple producers on one worker do not require MPSC. Select after replica,
+node-pool, or automatic-group physical planning, without invoking factories or
+creating queues. Start must materialize fresh typed storage from the frozen plan.
+
+`Definition.EdgeQueuePlans()` must return independent ordered physical rows,
+including EdgeID, LogicalEdgeID, Replica, MergeID/BroadcastID/ShardID where
+applicable, Model, ProducerWorkers, ConsumerWorkers, Remote, and inactive NUMA.
+Copied plan metadata must not expose runtime resources or private binding pointers.
+
+Custom `queue.Factory[T]` is local-only. Manual cross-group ordinary/error edges
+must report `ValidationCodeRemoteQueueFactory`; incompatible physical shared
+ownership must reject with `ErrIncompatibleQueueFactory` before factory invocation.
+Nil factories select built-in queues. QueueOps is exactly:
+
+```go
+type QueueOps[T any] struct {
+    TryPush func(batch.Batch[T]) bool
+    TryPop func(*batch.Batch[T]) bool
+    Len func() uint32
+}
+```
+
+Local rings use preallocated handles and worker-owned cursors/count; cross-worker
+SPSC uses atomic cursor publication. `queue.NewMPSC[T](uint32)`, `NewSPMC[T]`, and
+`NewMPMC[T]` must return validated preallocated queues compatible with QueueOps
+through `Ops()`. Zero/unrepresentable capacities reject without usable storage.
+TryPush/TryPop must not wait for another caller: failure retains caller ownership,
+success publishes or returns one fully initialized exclusive batch exactly once.
+Concurrent `Len` is an observational, non-linearizable value bounded by capacity.
+Cursors must wrap modulo capacity without loss/duplication, including non-power-
+of-two capacities and counter boundaries. Failed operations consume no storage;
+steady-state operations allocate no framework memory.
+
+Queue callbacks supplied by callers must be nonblocking and FIFO and must respect
+the same ownership contract. All queue models use the shared
+[Drop/Wait and stop rules](02-execution-lifecycle.md#scheduling-and-publication):
+Drop releases once, Wait retains producer-local pending work without blocking
+downstream or reinvoking its handler. No fairness or global ordering guarantee is
+added for parallel paths.
+
+## Explicit topology registration
+
+```go
+func ConnectBroadcast[T any](*Builder, OutPort[T], []InPort[T], EdgeConfig[T]) ([]EdgeID, error)
+func ConnectShard[T any](*Builder, OutPort[T], []InPort[T], func(T) uint32, EdgeConfig[T]) ([]EdgeID, error)
+func ConnectFanIn[T any](*Builder, []OutPort[T], InPort[T], EdgeConfig[T]) ([]EdgeID, error)
+```
+
+Each API must register its fixed homogeneous endpoint list atomically: validate
+builder state, typed provenance, ordinary-port eligibility, distinct/unoccupied
+endpoints, configuration, and cycle constraints before committing branch IDs or
+occupying ports. Invalid/foreign/duplicate/connected/cyclic requests must leave
+all endpoints and IDs unchanged. Lists require at least two branches/producers;
+sharding also requires a non-nil selector. ErrorPort is not an ordinary output
+and these APIs do not add error-output fan-out. Returned dense branch EdgeIDs
+identify the explicit topology with its first branch ID as topology identity.
+
+| Topology | List semantics / diagnostics |
+| --- | --- |
+| Broadcast | Canonical destination order by node/port. Invalid destination sets use `ErrInvalidBroadcast`; source occupancy retains `ErrFanOutUnsupported`. |
+| Shard | **Supplied destination order** defines selector index, not sorted node order. Invalid setup uses `ErrInvalidShard`; out-of-range runtime selection panics with `ErrInvalidShardIndex`. |
+| Fan-in | Canonical producer order by node/port. Invalid producer cardinality/set uses `ErrFanInUnsupported`; cycle-producing registration uses `ErrFanInCycle`. |
+
+### Broadcast copies
+
+Each delivered branch must own a **different pooled slot** containing the source's
+logical elements with matching configured batch capacity. Copy of pointer-bearing
+T is shallow: slot exclusivity does not deep-copy pointed-to objects. Pool
+exhaustion loses only that branch copy. Queue Drop releases that branch; Wait
+retains and retries its already-made copy without recopying or redelivering
+completed branches. The source remains owned until all branches finish or discard.
+
+The source logical length must fit the broadcast BatchCapacity, including when a
+larger-capacity input was moved into the output. Oversized publication must reject
+every branch before copying and increment each branch's CapacityRejectedBatches/
+Elements, separately from pool exhaustion and queue Drop. Drain/Close must account
+for all source, queued, and branch-pending ownership exactly once.
+
+### Element sharding
+
+For each processed source element, call the typed selector once and assign it to
+the selected supplied-list branch without boxing. Invalid indices are contract
+violations, not silently remapped. Wait resumption must retain progress/choice,
+not call the selector again for an already-assigned element.
+
+Staging is bounded to per-branch batches and at most one active source batch.
+Fill and flush full staging batches, split as needed, and flush partial batches at
+input completion; no capacity growth is permitted. Branch pool exhaustion drops
+only the selected element and increments PoolExhaustions plus PoolDroppedElements;
+queue Drop loses that staged batch's elements, a distinct outcome. Wait retains
+staging/source progress until publication can continue. Cross-branch global order
+is unspecified. Forced Close releases source, partial, pending, and queued batches
+once and attributes remaining **unassigned** source elements to the first branch's
+ShardShutdownElements.
+
+### Unordered fan-in
+
+All producers feed one bounded shared queue for the target logical input. Accepted
+batches must reach one consumer exactly once with their originating pool identity
+intact; releasing downstream returns to the producing pool, not a merge-wide pool.
+There is no cross-producer delivery order. Each producer owns its pool and pending
+output: a full-queue Drop/Wait outcome affects that publishing branch, not other
+producers' ownership. Stop must drain/discard the shared queue once and each
+producer's pending batch once.
+
+## Physical parallelism
+
+Expansion must be validated and frozen at Build without node/queue factories,
+worker creation, or affinity calls. Every physical instance receives a fresh
+factory result per Start and [owner-worker lifecycle](02-execution-lifecycle.md#startup-and-rollback).
+Shared queues distribute accepted batches once, never implicitly broadcast them.
+
+| Property | Whole-group replicas | Node worker pool |
+| --- | --- | --- |
+| Declaration | `ReplicateGroup(*Builder, GroupID, uint32) error` | `ReplicateNode(*Builder, NodeID, uint32) error`; alias `SetNodeWorkerPool` |
+| CPU assignment | Replica 0 uses BindCPU; `BindReplicaCPU(*Builder, GroupID, replica uint32, cpu int) error` binds zero-based replicas. | `BindNodePoolCPU(*Builder, NodeID, worker uint32, cpu int) error` binds **every** zero-based worker. |
+| Valid count / CPU | Positive fixed count; complete unique nonnegative physical CPUs. | Positive fixed count; complete unique nonnegative worker CPUs, separate from retained manual bindings. |
+| Scope | Replicate all nodes in a logical group; internal edges pair corresponding replicas. Cross-group boundaries use shared cardinality-selected transport. | Expand only the selected node, leaving neighbors in their existing groups. Each logical input has one shared bounded queue; each worker has its own typed handlers/selectors. |
+| Identity | Deterministic logical group/node plus replica identity in copied plans, affinity, and metrics. | Stable logical NodeID plus zero-based worker identity. ReadyMask belongs to the worker making the call. |
+| Invalid configuration | `ErrInvalidReplicas`; groups containing ingress reject count >1 with `ErrReplicatedIngress`. | `ErrInvalidWorkerPool`; ingress adapters cannot become node pools. |
+
+Reject missing CPUs, invalid counts, duplicate physical CPUs, identity overflow,
+and node-pool/whole-group replication overlap before execution. Broadcast endpoints
+must not participate in replica/node-pool expansion (`ErrBroadcastParallelExpansion`);
+sharding endpoints have the same boundary (`ErrShardParallelExpansion`). Do not
+invent ambiguous parallel branch semantics. Unreplicated ingress **may** feed a
+replicated downstream group through a shared SPMC boundary.
+
+Every producer worker must acquire from its own typed source pool, including
+shared MPSC/MPMC output transport. No framework-created mutable state or output
+pool may be shared between producer instances. Multi-input heterogeneous dispatch
+must remain typed per worker. No global output order or fairness is promised.
+Drain/Close and startup rollback must include all physical workers and reclaim
+every queued/pending batch once.
+
+Registered counters must have independent replica/worker-local slots.
+`CounterForReplica` selects a zero-based instance; logical-only Counter on a
+multi-instance node must return `ErrAmbiguousCounter`, not an arbitrary slot.
+Automatic planning must preserve expansion's hard worker boundaries; its pure
+[constrained minimizer](05-planning-performance.md#constraint-preserving-coalescing)
+may reduce legal remote edges but cannot erase explicit parallelism.

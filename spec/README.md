@@ -1,36 +1,20 @@
 # GPF specifications
 
-The detailed contracts are consolidated into five documents. Read top to
-bottom for the system model, or choose a topic:
+The five topic contracts describe the current system, not an implementation-stage
+sequence. **Must/must not** are requirements; **may** is permission. Examples and
+dated research explain the contracts without adding hidden behavior.
 
-1. [Typed data and graph](01-typed-graph.md) — batches, ownership, node and port
-   contracts, graph construction and validation, immutable definitions.
-2. [Execution and lifecycle](02-execution-lifecycle.md) — executors, placement,
-   ingress, CPU affinity, draining, and shutdown.
-3. [Topologies and transport](03-topologies-transport.md) — bounded queues,
-   fan-out, sharding, fan-in, replicas, worker pools, and queue planning.
-4. [Errors and observability](04-errors-observability.md) — typed error
-   delivery, logging, metrics, and processing-time measurement.
-5. [Planning and performance](05-planning-performance.md) — automatic
-   grouping, CPU assignment, NUMA metadata, benchmarks, and optimization policy.
+| Topic | Read for |
+| --- | --- |
+| [Typed data and graph](01-typed-graph.md) | Batch ownership, node/factory types, handles, registration, connection errors, DAG diagnostics, immutable Build. |
+| [Execution and lifecycle](02-execution-lifecycle.md) | Manual groups/CPUs, startup/rollback, locked workers/affinity, dispatch, ingress, drain/deadline/Close. |
+| [Topologies and transport](03-topologies-transport.md) | Queue selection, bounded concurrent queues, broadcast, shard, fan-in, replicas, node pools. |
+| [Errors and observability](04-errors-observability.md) | Typed failure delivery, mapping/logging, numeric snapshots/counters, handler/worker timing, clock evidence. |
+| [Planning and performance](05-planning-performance.md) | Automatic constraints/preview/finalization, NUMA preparation only, allocation/benchmark gates, optional fast paths. |
 
-The five documents retain the current normative requirements and behavioral
-scenarios. Earlier capability files have been merged into these topics rather
-than maintained as a second source of truth.
-
-## Architectural baseline
-
-GPF is a batch-oriented typed pipeline framework: a mutable control plane builds
-and validates a DAG, then an immutable definition starts fresh execution
-resources. Data-plane values remain statically typed; bounded pools and queues
-make ownership and overload behavior explicit. Work is grouped into fixed
-workers; manual placement is the baseline, while automatic plans require an
-explicit preview and finalization. Parallel topology is explicit (replicas,
-worker pools, sharding, fan-out, and fan-in); ordering is not guaranteed across
-parallel paths. Graceful drain is bounded by a deadline, and forced cleanup
-returns owned resources exactly once.
-
-These consolidated contracts supersede the earlier staged implementation
-plan. Its API sketches and phase sequence are historical, not additional
-requirements or a current roadmap. When details differ, the five capability
-documents above are authoritative.
+GPF builds a typed DAG in a mutable control plane, then starts fresh fixed workers,
+pools, and bounded queues from immutable plans. Ownership is exclusive; overload
+and cleanup are explicit. Manual execution is the default; automatic execution
+requires preview, complete CPU assignment, and finalization. Parallel paths add
+no global ordering guarantee. Shutdown is cooperative, so deadlines cannot
+interrupt nonreturning user callbacks. NUMA intent is metadata, not placement.
