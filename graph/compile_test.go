@@ -62,9 +62,53 @@ func TestCompileFailFixturesDoNotCompile(t *testing.T) {
 	if err == nil {
 		t.Fatalf("compile-fail fixture succeeded:\n%s", output)
 	}
-	for _, symbol := range []string{"OutputPorts1", "Connect", "ConnectError"} {
-		if !bytes.Contains(output, []byte(symbol)) {
-			t.Fatalf("compile failure does not mention %s:\n%s", symbol, output)
-		}
+	// Older Go versions omit the called function's name, so check the
+	// mismatched types together in the diagnostic for each fixture call.
+	tests := []struct {
+		name     string
+		location string
+		actual   string
+		expected string
+	}{
+		{
+			name:     "ordinary input type",
+			location: "connect_mismatched.go:12:",
+			actual:   "graph.InPort[string]",
+			expected: "graph.InPort[int]",
+		},
+		{
+			name:     "error output used as ordinary output",
+			location: "connect_mismatched.go:13:",
+			actual:   "graph.ErrorPort[int]",
+			expected: "graph.OutPort[int]",
+		},
+		{
+			name:     "error input type",
+			location: "connect_mismatched.go:14:",
+			actual:   "graph.InPort[string]",
+			expected: "graph.InPort[int]",
+		},
+		{
+			name:     "output shape",
+			location: "output_shape_mismatched.go:11:",
+			actual:   "graph.OutputRef[node.Outputs2[int, string]]",
+			expected: "graph.OutputRef[node.Outputs1[",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, diagnostic := range bytes.Split(output, []byte("\n")) {
+				if !bytes.Contains(diagnostic, []byte(test.location)) {
+					continue
+				}
+				for _, token := range []string{test.actual, "does not match", test.expected} {
+					if !bytes.Contains(diagnostic, []byte(token)) {
+						t.Fatalf("compile diagnostic for %s does not mention %q:\n%s", test.location, token, output)
+					}
+				}
+				return
+			}
+			t.Fatalf("missing compile diagnostic for %s:\n%s", test.location, output)
+		})
 	}
 }
