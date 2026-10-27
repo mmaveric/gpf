@@ -1,0 +1,15 @@
+digraph G {
+  rankdir=LR;
+  node [shape=box, style=rounded, fontname=Helvetica];
+  n1 [label="Source\nID 1 · replica 0"];
+  n2 [label="Source\nID 2 · replica 1"];
+  n3 [label="Transform\nID 3 · replica 0"];
+  n4 [label="Transform\nID 4 · replica 1"];
+  n5 [label="Sink\nID 5 · replica 0"];
+  n6 [label="Sink\nID 6 · replica 1"];
+  n7 [label="Isolated\nID 7 · replica 0"];
+  n1 -> n3 [label="data: out1 → in1"];
+  n2 -> n4 [label="data: out1 → in1"];
+  n3 -> n5 [label="data: out1 → in1"];
+  n4 -> n6 [label="data: out1 → in1"];
+}
