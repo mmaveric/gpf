@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/asharipov/gpf/graph"
+	"github.com/mmaveric/gpf/graph"
 )
 
 func TestBuildShowcaseQueuePlans(t *testing.T) {

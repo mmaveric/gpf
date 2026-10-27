@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/node"
 )
 
 type factoryState struct {

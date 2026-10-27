@@ -4,10 +4,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/graph"
-	"github.com/asharipov/gpf/node"
-	"github.com/asharipov/gpf/queue"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/graph"
+	"github.com/mmaveric/gpf/node"
+	"github.com/mmaveric/gpf/queue"
 )
 
 func BenchmarkDataPlane(b *testing.B) {

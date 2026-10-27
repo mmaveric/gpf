@@ -4,8 +4,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/numa"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/numa"
 )
 
 func TestNUMAPoolMetadataAndDormantTypedAllocator(t *testing.T) {

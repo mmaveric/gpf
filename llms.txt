@@ -1,6 +1,6 @@
 # Go Pipeline Framework
 
-This Go module (`github.com/asharipov/gpf`, Go 1.22+) provides typed batches,
+This Go module (`github.com/mmaveric/gpf`, Go 1.22+) provides typed batches,
 generated typed nodes, and a graph runtime for batch-oriented pipelines.
 
 ## Project documentation

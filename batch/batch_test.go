@@ -5,9 +5,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/internal/benchtest"
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/internal/benchtest"
+	"github.com/mmaveric/gpf/node"
 )
 
 func TestBatchZeroValue(t *testing.T) {

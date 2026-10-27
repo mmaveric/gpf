@@ -9,7 +9,7 @@ Steady-state paths use concrete generic batches and generated typed function
 closures. They do not use reflection, runtime type assertions, or boxed
 data-plane values.
 
-The module path is `github.com/asharipov/gpf` and the minimum supported Go
+The module path is `github.com/mmaveric/gpf` and the minimum supported Go
 version is Go 1.22.
 
 ## Generated Node Contracts

@@ -1,6 +1,6 @@
 package compilefail
 
-import "github.com/asharipov/gpf/node"
+import "github.com/mmaveric/gpf/node"
 
 type arbitraryOutput struct{}
 

@@ -3,7 +3,7 @@ package batch_test
 import (
 	"testing"
 
-	"github.com/asharipov/gpf/batch"
+	"github.com/mmaveric/gpf/batch"
 )
 
 func TestPoolUtilizationAndHighWater(t *testing.T) {

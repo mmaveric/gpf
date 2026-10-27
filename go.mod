@@ -1,4 +1,4 @@
-module github.com/asharipov/gpf
+module github.com/mmaveric/gpf
 
 go 1.22
 

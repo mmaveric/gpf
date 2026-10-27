@@ -1,7 +1,7 @@
 package graph
 
 import (
-	"github.com/asharipov/gpf/numa"
+	"github.com/mmaveric/gpf/numa"
 	"sort"
 )
 

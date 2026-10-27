@@ -2,7 +2,7 @@
 
 package compilefail
 
-import "github.com/asharipov/gpf/graph"
+import "github.com/mmaveric/gpf/graph"
 
 func connectMismatchedPorts() {
 	var output graph.OutPort[int]

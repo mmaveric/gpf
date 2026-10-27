@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/asharipov/gpf/batch"
+	"github.com/mmaveric/gpf/batch"
 )
 
 var (

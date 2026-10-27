@@ -1,6 +1,6 @@
 package graph
 
-import "github.com/asharipov/gpf/node"
+import "github.com/mmaveric/gpf/node"
 
 // The typed mapper is captured once during normalization. Sink resolution is a
 // control-plane operation; worker failures perform no group lookup or boxing.

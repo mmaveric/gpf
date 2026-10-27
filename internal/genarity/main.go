@@ -270,7 +270,7 @@ type Node{{.Count}}{{.ExplicitTypeParams}} struct {
 
 const closuresTemplate = `package node
 
-import "github.com/asharipov/gpf/batch"
+import "github.com/mmaveric/gpf/batch"
 {{range .}}
 // ClosureNode{{.Count}} is a closure handler set with {{.Count}} typed inputs.
 type ClosureNode{{.Count}}{{.ClosureTypeParams}} struct {
@@ -287,7 +287,7 @@ type ClosureNode{{.Count}}{{.ClosureTypeParams}} struct {
 
 const portsTemplate = `package graph
 
-import "github.com/asharipov/gpf/node"
+import "github.com/mmaveric/gpf/node"
 {{range .}}
 // InPorts{{.Count}} contains {{.Count}} typed input ports.
 type InPorts{{.Count}}{{.InputTypeParams}} struct {
@@ -317,8 +317,8 @@ const registrationTemplate = `package graph
 import (
 	"unsafe"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/node"
 )
 {{range .}}
 // AddNode{{.Count}} registers an explicit-state node with {{.Count}} typed inputs.

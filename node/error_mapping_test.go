@@ -3,7 +3,7 @@ package node_test
 import (
 	"testing"
 
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/node"
 )
 
 func TestErrorMapperTypedPayload(t *testing.T) {

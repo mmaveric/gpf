@@ -3,7 +3,7 @@ package graph
 import (
 	"errors"
 	"fmt"
-	"github.com/asharipov/gpf/numa"
+	"github.com/mmaveric/gpf/numa"
 	"math"
 	"sort"
 )

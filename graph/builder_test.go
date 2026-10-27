@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/node"
 )
 
 type testState struct{}

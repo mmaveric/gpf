@@ -4,7 +4,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/asharipov/gpf/examples/showcase/internal/showcase"
+	"github.com/mmaveric/gpf/examples/showcase/internal/showcase"
 )
 
 func BenchmarkFullShowcase(b *testing.B) {

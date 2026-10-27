@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/node"
-	"github.com/asharipov/gpf/queue"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/node"
+	"github.com/mmaveric/gpf/queue"
 )
 
 var (

@@ -5,9 +5,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/numa"
-	"github.com/asharipov/gpf/queue"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/numa"
+	"github.com/mmaveric/gpf/queue"
 )
 
 func TestNUMAAnnotationsAndAllocatorDescriptorsStayDormant(t *testing.T) {

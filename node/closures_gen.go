@@ -2,7 +2,7 @@
 
 package node
 
-import "github.com/asharipov/gpf/batch"
+import "github.com/mmaveric/gpf/batch"
 
 // ClosureNode0 is a closure handler set with 0 typed inputs.
 type ClosureNode0[O OutputSet, E any] struct {

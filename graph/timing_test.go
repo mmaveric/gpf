@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/node"
 	"github.com/loov/hrtime"
 )
 

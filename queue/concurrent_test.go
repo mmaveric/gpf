@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/asharipov/gpf/batch"
+	"github.com/mmaveric/gpf/batch"
 )
 
 func TestConcurrentQueueConstructorsAndOwnership(t *testing.T) {

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/node"
-	"github.com/asharipov/gpf/queue"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/node"
+	"github.com/mmaveric/gpf/queue"
 )
 
 var ErrFanInCycle = errors.New("fan-in connection would create a cycle")

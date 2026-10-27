@@ -5,8 +5,8 @@ package graph
 import (
 	"unsafe"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/node"
 )
 
 // AddNode0 registers an explicit-state node with 0 typed inputs.

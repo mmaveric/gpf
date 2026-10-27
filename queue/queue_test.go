@@ -3,8 +3,8 @@ package queue_test
 import (
 	"testing"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/queue"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/queue"
 )
 
 func TestQueueOpsDeclaration(t *testing.T) {

@@ -2,7 +2,7 @@
 
 package graph
 
-import "github.com/asharipov/gpf/node"
+import "github.com/mmaveric/gpf/node"
 
 // InPorts0 contains 0 typed input ports.
 type InPorts0 struct {

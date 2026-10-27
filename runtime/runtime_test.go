@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/asharipov/gpf/runtime"
+	"github.com/mmaveric/gpf/runtime"
 )
 
 func TestConfigDeclaration(t *testing.T) {

@@ -1,6 +1,6 @@
 package batch
 
-import "github.com/asharipov/gpf/numa"
+import "github.com/mmaveric/gpf/numa"
 
 // PoolMetrics reports sampled pool utilization without reading batch contents.
 // InUseSample and HighWaterSample are independent observations; the latter is

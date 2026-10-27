@@ -4,7 +4,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/node"
 )
 
 func TestCustomClockConfigDormantAtBuildAndSnapshot(t *testing.T) {

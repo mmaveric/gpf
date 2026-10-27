@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/node"
 )
 
 var (

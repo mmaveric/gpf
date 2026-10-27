@@ -3,7 +3,7 @@ package node
 import (
 	"unsafe"
 
-	"github.com/asharipov/gpf/batch"
+	"github.com/mmaveric/gpf/batch"
 )
 
 // OutputSet is the sealed set of supported ordinary output shapes.

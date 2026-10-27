@@ -3,7 +3,7 @@ package node_test
 import (
 	"fmt"
 
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/node"
 )
 
 func ExampleStateful() {

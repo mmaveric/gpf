@@ -3,10 +3,10 @@ package graph
 import (
 	"errors"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/node"
-	"github.com/asharipov/gpf/numa"
-	"github.com/asharipov/gpf/queue"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/node"
+	"github.com/mmaveric/gpf/numa"
+	"github.com/mmaveric/gpf/queue"
 )
 
 // NodeID identifies a node within a graph definition.

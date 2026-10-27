@@ -2,7 +2,7 @@ package batch
 
 import (
 	"errors"
-	"github.com/asharipov/gpf/numa"
+	"github.com/mmaveric/gpf/numa"
 	"sync/atomic"
 )
 

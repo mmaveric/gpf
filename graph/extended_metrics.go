@@ -5,9 +5,9 @@ import (
 	"sort"
 	"sync/atomic"
 
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/node"
-	"github.com/asharipov/gpf/numa"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/node"
+	"github.com/mmaveric/gpf/numa"
 )
 
 type CounterID = node.CounterID

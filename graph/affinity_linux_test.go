@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/asharipov/gpf/node"
+	"github.com/mmaveric/gpf/node"
 )
 
 func TestLinuxAffinityAdapterSelected(t *testing.T) {

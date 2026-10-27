@@ -1,8 +1,8 @@
 package queue
 
 import (
-	"github.com/asharipov/gpf/batch"
-	"github.com/asharipov/gpf/numa"
+	"github.com/mmaveric/gpf/batch"
+	"github.com/mmaveric/gpf/numa"
 )
 
 // Policy controls how a future edge handles a full queue.
