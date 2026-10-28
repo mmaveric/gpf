@@ -141,6 +141,6 @@ example-only flags to the framework command.
 ## Release preparation and licensing
 
 See the [Unreleased changelog](CHANGELOG.md) and [release checklist](RELEASE.md).
-No license has been selected or added by this preparation; the license type and
-copyright holder still require an owner decision. Do not infer a license grant
-from the repository being accessible.
+The project is licensed under [MIT](LICENSE), with the copyright notice
+`Copyright (c) 2026 Altynbek Sharipov`. Repository access alone is not a license
+grant; verify rights to all included materials before redistribution.

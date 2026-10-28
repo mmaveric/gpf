@@ -90,7 +90,10 @@ Factory/normalization errors can occur before owner workers exist. Current
 rollback closes those owned lifecycles on the startup caller, not a locked worker
 (`graph/executor.go`, `rollback`). The intended locked-owner lifecycle contract
 therefore remains unfulfilled for that failure phase; this specification does
-not assert that all startup failures already meet it or authorize a runtime fix.
+not assert that all startup failures already meet it. The owner accepts this
+limitation for `v0.1.0 experimental`; callbacks that require owner-worker
+execution are not guaranteed that execution context for pre-worker rollback.
+Changing startup construction/cleanup to provide such a guarantee is deferred.
 
 ## Locked workers and affinity
 

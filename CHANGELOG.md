@@ -7,8 +7,9 @@ does not announce a version or establish publication history. See
 ## [Unreleased]
 
 Target: **v0.1.0 experimental**, with no pre-1.0 API-stability promise. No
-release, tag, or publication is announced here. Licensing is explicitly deferred;
-license type and copyright holder remain blockers before publication.
+release, tag, or publication is announced here. The project has selected MIT and
+added its license notice; rights to distribute all included materials still need
+owner confirmation before publication.
 
 ### Added
 
@@ -28,8 +29,11 @@ license type and copyright holder remain blockers before publication.
   full-workflow benchmarks without source overlays; one-iteration smoke results
   are not a new performance baseline.
 - Five topic specifications replace duplicated historical stage requirements,
-  while [open conformance findings](RELEASE.md#conformance-review-gates) remain
-  explicit publication gates rather than implied runtime fixes.
+  and record accepted experimental limitations plus the post-release NUMA
+  milestone. Remote/DAG benchmarks now process and check logical batches of 64;
+  typed-error benchmarks identify one error event per operation. One-iteration
+  smoke runs are workload-shape checks, not performance results. See the
+  [release checklist](RELEASE.md#conformance-review-gates).
 
 ### Fixed
 
@@ -51,11 +55,15 @@ license type and copyright holder remain blockers before publication.
 ### Known limitations
 
 - No API-stability or broad Go/OS support promise is established by this entry.
-  License type, copyright holder, and publication approval remain unresolved.
+  Publication approval and confirmation of rights to all included materials
+  remain unresolved.
 - Shutdown deadlines are cooperative; there is no panic recovery, automatic
   handler retry, dynamic worker resizing, or implicit parallel-path ordering.
 - Some topology combinations are unsupported. See the
   [README limits](README.md#limits-and-operational-expectations) and
   [specification guide](spec/README.md) for the detailed contracts.
-- Source-verified lifecycle, metadata, and benchmark-dimension findings require
-  resolution or explicit owner acceptance; passing checks do not close them.
+- Pre-worker rollback and physical-plan metadata/order limitations are accepted
+  for the experimental target; NUMA activation and complete annotation snapshots
+  are deferred until after the first release. Benchmark workload shape passed a
+  one-iteration smoke check in the current working copy; repeat verification on
+  the frozen release candidate. This is not a performance result.

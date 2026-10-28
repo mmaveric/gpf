@@ -2,9 +2,10 @@
 
 The selected target is **v0.1.0 experimental**, with no pre-1.0 API-stability
 promise. This is **not a completed release, release announcement, or
-authorization to publish**. Licensing is explicitly deferred: the license type
-and copyright holder remain publication blockers. Choose and review the exact
-commit before depending on it.
+authorization to publish**. MIT was selected and added in `LICENSE`, with the
+copyright notice `Copyright (c) 2026 Altynbek Sharipov`. The owner still needs to
+ensure they have rights to distribute all included materials. Choose and review
+the exact commit before depending on it.
 
 ## Compatibility evidence
 
@@ -47,9 +48,9 @@ set a portable throughput promise.
 
 ## Owner decisions before publication
 
-- [ ] Deferred by the owner: select the license type and confirm the copyright
-  holder and rights to distribute the repository and included materials. No
-  license file has been added; repository access is not a substitute for a grant.
+- [x] Select MIT and record the copyright notice in `LICENSE`.
+- [ ] Confirm rights to distribute all repository code and included materials;
+  repository access is not a substitute for a grant.
 - [x] Select the documentation target: **v0.1.0 experimental**, not a release.
 - [ ] Decide whether to publish at all and select the exact candidate commit.
   Local inspection found no tags; this is a local fact, not
@@ -59,9 +60,10 @@ set a portable throughput promise.
 - [x] Mark the target experimental with no pre-1.0 API-stability promise;
   breaking API changes remain possible. Do not infer stability from generated
   APIs or a v0.x number.
-- [ ] Review dependency and licensing obligations, including the direct
-  `github.com/loov/hrtime` requirement, without assuming an example's lack of
-  extra setup means the module has no dependencies.
+- [x] Review the direct `github.com/loov/hrtime v1.0.3` license: its checked-in
+  license is MIT, compatible with GPF's MIT license. Preserve its notice when
+  distributing copies or substantial portions; include a third-party notice for
+  binary distributions as prudent practice.
 
 ## Candidate verification checklist
 
@@ -103,32 +105,28 @@ public contracts and release notes with that decision. Acceptance is not a claim
 that the intended guarantee has been implemented. No runtime fix is authorized
 by this checklist.
 
-- [ ] **Pre-worker startup rollback:** review the
-  [startup conformance check](spec/02-execution-lifecycle.md#startup-conformance-check).
-  Factory/normalization failures before workers exist currently Close owned
-  lifecycles on the startup caller, not a locked owner worker. The intended
-  locked-owner guarantee is unfulfilled for that phase; do not claim universal
-  owner-worker rollback without resolution or explicit acceptance of this limit.
-- [ ] **Metadata identity, ordering, and NUMA observation:** review
-  [immutable definition inspection](spec/01-typed-graph.md#build-and-immutable-definitions),
-  [affinity rows](spec/02-execution-lifecycle.md#locked-workers-and-affinity),
-  [numeric snapshots](spec/04-errors-observability.md#numeric-runtime-snapshots),
-  [pool metadata](spec/04-errors-observability.md#counters-and-pressure-semantics),
-  and [inactive NUMA metadata](spec/05-planning-performance.md#numa-metadata-and-inactive-allocators).
-  GroupNUMA exposes physical GroupID, Replica, and Placement, not separate logical
-  and physical IDs. Expanded metric/affinity rows follow physical-plan order,
-  not globally ascending logical IDs. Some ordinary-edge and broadcast/shard
-  scratch-pool metric paths omit configured NUMA annotations. Review these
-  differences explicitly; the metadata contract is not evidence that every
-  observation path conforms, and NUMA placement remains inactive.
-- [ ] **Benchmark dimensions versus logical work:** review
-  [benchmark and allocation conformance](spec/05-planning-performance.md#benchmark-and-allocation-conformance).
-  Remote/DAG/error names containing `batch=64` do not prove that each measured
-  operation processes 64 logical elements: existing fixtures may set length one,
-  and typed error batches deliberately contain one element. Resolve or explicitly
-  accept the naming/measurement limitation before publishing comparisons; report
-  configured capacity and actual logical work separately rather than asserting
-  equal work from names alone.
+- [x] **Pre-worker startup rollback — accepted limitation:** factory/normalization
+  failures before workers exist currently Close owned lifecycles on the startup
+  caller, not a locked owner worker. The owner accepts this for `v0.1.0
+  experimental`; no universal owner-worker rollback guarantee is made for that
+  phase. See the [startup conformance check](spec/02-execution-lifecycle.md#startup-conformance-check).
+- [x] **Metadata identity and ordering — accepted limitation:** `GroupNUMA`
+  exposes physical `GroupID`, replica, and placement; expanded metric/affinity
+  rows follow physical-plan order, not globally ascending logical IDs. The owner
+  accepts this representation for `v0.1.0 experimental`; no separate logical-
+  group ID or logical-order snapshot guarantee is made. See [definition
+  inspection](spec/01-typed-graph.md#build-and-immutable-definitions) and
+  [numeric snapshots](spec/04-errors-observability.md#numeric-runtime-snapshots).
+- [x] **NUMA placement and observation — deferred milestone:** NUMA annotations
+  remain descriptive only; memory placement is inactive. The owner defers both
+  activation and complete propagation of annotations to pool snapshots (including
+  ordinary-edge and broadcast/shard scratch pools) until after the first release.
+  See [inactive NUMA metadata](spec/05-planning-performance.md#numa-metadata-and-inactive-allocators).
+- [x] **Benchmark dimensions versus logical work:** remote/DAG operations now
+  process and check 64 logical elements; typed-error cases are named for one error
+  event per failure. Package tests and one-iteration benchmark smoke passed. This
+  verifies the workload shape, not a performance baseline; repeat checks on the
+  frozen candidate. See [benchmark conformance](spec/05-planning-performance.md#benchmark-and-allocation-conformance).
 
 These are bounded source-review findings, not an exhaustive conformance audit.
 The completed-source snapshot passed the checks above, but independent contract

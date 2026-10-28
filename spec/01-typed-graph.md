@@ -326,11 +326,12 @@ queue, worker, logger, affinity outcome, or mutable metrics belong to Build.
 **logical** topology even when execution expands it. `EdgeQueuePlans()`,
 `Constraints()`, and `GroupNUMA()` return copied physical-plan metadata with
 applicable logical/replica identities, not mutable resources. GroupNUMA rows are
-physical-group ordered `GroupNUMAMetadata{GroupID, Replica, Placement}`; placement
-presence distinguishes explicit NUMA zero. Nil/zero definitions return zero
-counts and nil/empty snapshots, and [Start](02-execution-lifecycle.md) rejects
-them. `WriteDOT(io.Writer) error` exports deterministic logical topology, not a
-live executor or physical placement view.
+physical-group ordered `GroupNUMAMetadata{GroupID, Replica, Placement}`; they do
+not provide a separate logical-group ID. Placement presence distinguishes
+explicit NUMA zero. Nil/zero definitions return zero counts and nil/empty
+snapshots, and [Start](02-execution-lifecycle.md) rejects them.
+`WriteDOT(io.Writer) error` exports deterministic logical topology, not a live
+executor or physical placement view.
 
 Inspection must not invoke callbacks or mutate execution. Each sequential Start
 after completed stop must create fresh runtime state while definition topology,

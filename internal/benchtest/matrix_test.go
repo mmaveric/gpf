@@ -17,8 +17,8 @@ func BenchmarkDataPlane(b *testing.B) {
 	})
 	b.Run("local-edge/batch=64/group=1", benchmarkLocalEdge)
 	b.Run("remote-queue/batch=64/groups=2", benchmarkRemoteDelivery)
-	b.Run("local-error/batch=64/groups=1", func(b *testing.B) { benchmarkErrorDelivery(b, false) })
-	b.Run("remote-error/batch=64/groups=2", func(b *testing.B) { benchmarkErrorDelivery(b, true) })
+	b.Run("local-error/error-event=1/groups=1", func(b *testing.B) { benchmarkErrorDelivery(b, false) })
+	b.Run("remote-error/error-event=1/groups=2", func(b *testing.B) { benchmarkErrorDelivery(b, true) })
 	b.Run("end-to-end-dag/batch=64/groups=2/depth=3", benchmarkTwoGroupDAG)
 	b.Run("pool-release/clear=false/batch=64", func(b *testing.B) {
 		benchmarkPoolLifecycle(b, false)
@@ -29,13 +29,15 @@ func BenchmarkDataPlane(b *testing.B) {
 }
 
 func benchmarkRemoteDelivery(b *testing.B) {
+	const batchSize uint64 = 64
+
 	type gate struct {
 		requested atomic.Uint64
 		delivered atomic.Uint64
+		invalid   atomic.Bool
 	}
 	type sourceState struct {
-		gate    *gate
-		emitted uint64
+		gate *gate
 	}
 	shared := &gate{}
 	builder := graph.NewBuilder()
@@ -47,8 +49,11 @@ func benchmarkRemoteDelivery(b *testing.B) {
 				return node.Result[error]{}
 			}
 			requested := state.gate.requested.Add(1)
-			value.Mutable()[0] = int(requested)
-			value.SetLen(1)
+			items := value.Mutable()
+			for i := range items {
+				items[i] = int(requested*batchSize + uint64(i))
+			}
+			value.SetLen(len(items))
 			outputs.Out1.Commit(&value)
 			return node.Result[error]{}
 		}},
@@ -59,7 +64,11 @@ func benchmarkRemoteDelivery(b *testing.B) {
 	sink, err := graph.AddNode1(builder, node.Stateful[struct{}, node.Node1[struct{}, int, node.Outputs0, error]]{
 		Factory: func() (struct{}, error) { return struct{}{}, nil },
 		Handlers: node.Node1[struct{}, int, node.Outputs0, error]{Handle1: func(_ *struct{}, input batch.Batch[int], _ *node.Outputs0) node.Result[error] {
-			shared.delivered.Add(1)
+			items := input.Items()
+			if len(items) != int(batchSize) {
+				shared.invalid.Store(true)
+			}
+			shared.delivered.Add(uint64(len(items)))
 			return node.Result[error]{}
 		}},
 	})
@@ -91,20 +100,25 @@ func benchmarkRemoteDelivery(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for iteration := 0; iteration < b.N; iteration++ {
-		target := shared.delivered.Load() + 1
+		target := shared.delivered.Load() + batchSize
 		for shared.delivered.Load() < target {
+		}
+		if shared.invalid.Load() {
+			b.Fatal("remote delivery did not preserve the 64-element batch")
 		}
 	}
 }
 
 func benchmarkTwoGroupDAG(b *testing.B) {
+	const batchSize uint64 = 64
+
 	type gate struct {
 		requested atomic.Uint64
 		delivered atomic.Uint64
+		invalid   atomic.Bool
 	}
 	type sourceState struct {
-		gate    *gate
-		emitted uint64
+		gate *gate
 	}
 	shared := &gate{}
 	builder := graph.NewBuilder()
@@ -116,8 +130,11 @@ func benchmarkTwoGroupDAG(b *testing.B) {
 				return node.Result[error]{}
 			}
 			requested := state.gate.requested.Add(1)
-			value.Mutable()[0] = int(requested)
-			value.SetLen(1)
+			items := value.Mutable()
+			for i := range items {
+				items[i] = int(requested*batchSize + uint64(i))
+			}
+			value.SetLen(len(items))
 			outputs.Out1.Commit(&value)
 			return node.Result[error]{}
 		}},
@@ -132,8 +149,13 @@ func benchmarkTwoGroupDAG(b *testing.B) {
 			if !ok {
 				return node.Result[error]{Failed: true}
 			}
-			value.Mutable()[0] = input.Items()[0]
-			value.SetLen(1)
+			inputItems := input.Items()
+			if len(inputItems) != int(batchSize) {
+				shared.invalid.Store(true)
+			}
+			outputItems := value.Mutable()
+			copy(outputItems, inputItems)
+			value.SetLen(len(inputItems))
 			outputs.Out1.Commit(&value)
 			return node.Result[error]{}
 		}},
@@ -144,7 +166,11 @@ func benchmarkTwoGroupDAG(b *testing.B) {
 	sink, err := graph.AddNode1(builder, node.Stateful[struct{}, node.Node1[struct{}, int, node.Outputs0, error]]{
 		Factory: func() (struct{}, error) { return struct{}{}, nil },
 		Handlers: node.Node1[struct{}, int, node.Outputs0, error]{Handle1: func(_ *struct{}, input batch.Batch[int], _ *node.Outputs0) node.Result[error] {
-			shared.delivered.Add(1)
+			items := input.Items()
+			if len(items) != int(batchSize) {
+				shared.invalid.Store(true)
+			}
+			shared.delivered.Add(uint64(len(items)))
 			return node.Result[error]{}
 		}},
 	})
@@ -180,8 +206,11 @@ func benchmarkTwoGroupDAG(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for iteration := 0; iteration < b.N; iteration++ {
-		target := shared.delivered.Load() + 1
+		target := shared.delivered.Load() + batchSize
 		for shared.delivered.Load() < target {
+		}
+		if shared.invalid.Load() {
+			b.Fatal("DAG delivery did not preserve the 64-element batch")
 		}
 	}
 }

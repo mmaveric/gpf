@@ -139,6 +139,16 @@ to follow an OS placement request. Future activation must settle and test:
 | Placement proof | OS evidence of actual memory location, not an inferred affinity result. |
 | Performance | Repeated representative local/cross-node distributions for portable/preferred/strict/fallback paths; startup, throughput, tail latency, and footprint; reversible portable selection. One microbenchmark is insufficient. |
 
+#### Post-release NUMA milestone
+
+For `v0.1.0 experimental`, NUMA placement is inactive and annotations are
+descriptive metadata only. The owner defers both (1) designing and activating
+actual memory placement and (2) propagating configured annotations through every
+pool metric/snapshot path, including ordinary-edge and broadcast/shard scratch
+pools, until after the first release. This milestone does not promise a date or
+commit to activating NUMA if portability, ownership, placement evidence, or
+representative performance requirements cannot be met.
+
 ## Benchmark and allocation conformance
 
 The Go benchmark matrix must provide named executable cases for the approved
@@ -151,12 +161,18 @@ data-plane paths, encoding batch size and relevant group/depth dimensions:
 | `local-edge/batch=64/group=1` | Built-in typed local delivery of logical 64-element batches, not a skipped reservation. |
 | `remote-queue/batch=64/groups=2` | Executable built-in SPSC transfer, not an unavailable placeholder. |
 | `end-to-end-dag/batch=64/groups=2/depth=3` | Executable fixed two-group DAG. |
-| Local/remote typed errors | Failed result to typed sink, error SPSC, Drop release, and Wait retry; names retain batch/group dimensions. |
+| Local/remote typed errors | Failed result to typed sink, error SPSC, Drop release, and Wait retry. A failed handler produces one typed error value per error event, so names use `error-event=1` and group dimensions rather than implying 64 error elements. |
 
 Each benchmark must call `b.ReportAllocs`, exclude Build/Start/setup and teardown
 from measured iterations, and keep snapshots outside the steady-state operation.
 Unimplemented paths may only be marked explicitly unavailable, not given a
 misleading measurement; the implemented matrix entries above must execute.
+
+The remote queue and end-to-end DAG benchmark operations must each deliver a
+logical 64-element batch, not merely reserve capacity for 64. Their configured
+capacity and actual logical length should be checked independently. Typed-error
+benchmarks measure one error event per failed handler result and must not claim a
+64-element error batch.
 
 `testing.AllocsPerRun` gates must assert **zero framework allocations** after setup
 for pool lifecycle/exhaustion, node calls, one-/multi-input dispatch, local/remote

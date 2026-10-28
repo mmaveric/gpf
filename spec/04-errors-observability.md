@@ -138,8 +138,12 @@ before handles are cleared or user code changes ownership.
 | Ingress: accepted/drop batch/element counts, `PoolExhaustions` | External admission outcomes, separately from downstream edge work. |
 
 Pool rows preserve producer/source identity, EdgeID and applicable topology/replica
-identity, and inactive NUMA intent. Ingress source pools use source NodeID with
-EdgeID zero. Pool high-water must survive exhaustion/recovery.
+identity, and may report inactive NUMA intent. Ingress source pools use source
+NodeID with EdgeID zero. Pool high-water must survive exhaustion/recovery. Current
+runtime snapshots omit configured NUMA annotations on some ordinary-edge and
+broadcast/shard scratch-pool paths; this limitation is accepted for `v0.1.0
+experimental` and is tracked for post-release work. These annotations do not imply
+that memory placement is active.
 
 `SetGroupMetricsFlushEvery(*Builder, every uint64) error` may batch publication
 of group pass/timing counts: default one, zero rejected with
